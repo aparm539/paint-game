@@ -184,6 +184,10 @@ export class Game {
     });
 
     this.socketClient.onPlayerJoined((player) => {
+      // Initialize target position for new players
+      if (player.id !== this.currentPlayerId) {
+        player.targetPosition = { ...player.position };
+      }
       this.players.set(player.id, player);
       this.createAvatarElement(player);
       this.updatePlayerListUI();
@@ -202,10 +206,11 @@ export class Game {
     });
 
     this.socketClient.onPlayerMove((move) => {
-      // Update other players' positions
+      // Update other players' positions with interpolation
       const player = this.players.get(move.playerId);
       if (player && move.playerId !== this.currentPlayerId) {
-        player.position = move.position;
+        // Set target position for smooth interpolation
+        player.targetPosition = { ...move.position };
       }
     });
 
@@ -250,6 +255,11 @@ export class Game {
       
       // Create avatar elements for all players (including existing ones)
       state.players.forEach((player) => {
+        // Initialize target position for other players
+        if (player.id !== this.currentPlayerId && !player.targetPosition) {
+          player.targetPosition = { ...player.position };
+        }
+        
         if (!this.avatarElements.has(player.id)) {
           this.createAvatarElement(player);
           console.log('Created avatar for player:', player.username, player.id);
@@ -467,6 +477,12 @@ export class Game {
 
   private updatePlayers(players: Player[]): void {
     players.forEach((player) => {
+      const existingPlayer = this.players.get(player.id);
+      if (existingPlayer && player.id !== this.currentPlayerId) {
+        // For other players, preserve current position and set target for interpolation
+        player.targetPosition = { ...player.position };
+        player.position = { ...existingPlayer.position };
+      }
       this.players.set(player.id, player);
     });
   }
@@ -603,6 +619,22 @@ export class Game {
 
   private updateAllAvatarPositions(): void {
     this.players.forEach((player) => {
+      // Interpolate other players' positions for smooth movement
+      if (player.id !== this.currentPlayerId && player.targetPosition) {
+        // Smooth interpolation (lerp) towards target position
+        const smoothing = 0.3; // Higher = snappier, lower = smoother
+        player.position.x += (player.targetPosition.x - player.position.x) * smoothing;
+        player.position.y += (player.targetPosition.y - player.position.y) * smoothing;
+        
+        // Snap to target if very close (within 0.5 pixels)
+        const dx = player.targetPosition.x - player.position.x;
+        const dy = player.targetPosition.y - player.position.y;
+        const distanceSquared = dx * dx + dy * dy;
+        if (distanceSquared < 0.25) {
+          player.position = { ...player.targetPosition };
+        }
+      }
+      
       this.updateAvatarPosition(player);
     });
   }
@@ -849,12 +881,6 @@ export class Game {
     const currentPlayer = this.players.get(this.currentPlayerId);
     if (!currentPlayer) return;
 
-    // Draw world coordinates in corner (optional debug info)
-    // Uncomment to show position coordinates:
-    // this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-    // this.ctx.font = '14px monospace';
-    // const posText = `World: (${Math.round(currentPlayer.position.x)}, ${Math.round(currentPlayer.position.y)})`;
-    // this.ctx.fillText(posText, 10, 20);
   }
 
   setCurrentPlayer(playerId: string): void {

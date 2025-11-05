@@ -10,6 +10,7 @@ export interface Player {
   username: string;
   position: Position;
   color: string; // Avatar color for display
+  targetPosition?: Position; // For smooth interpolation (client-side only)
 }
 
 export interface GridCell {
