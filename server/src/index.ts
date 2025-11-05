@@ -28,8 +28,10 @@ const io = new Server(httpServer, {
 const PORT = process.env.PORT || 3000;
 
 // Serve static files from client
-const publicDir = join(__dirname, '../../client/public');
-const distDir = join(__dirname, '../../client/dist');
+// In production, compiled server is at: server/dist/server/src/index.js
+// So we need to go up 4 levels to reach project root, then down to client
+const publicDir = join(__dirname, '../../../../client/public');
+const distDir = join(__dirname, '../../../../client/dist');
 
 app.use(express.static(publicDir));
 app.use(express.static(distDir));
@@ -45,7 +47,7 @@ setupSocketHandlers(io);
 // Serve index.html for all routes (SPA fallback)
 app.get('*', (req, res) => {
   const distIndex = join(distDir, 'index.html');
-  const devIndex = join(__dirname, '../../client/index.html');
+  const devIndex = join(__dirname, '../../../../client/index.html');
 
   const fileToSend = existsSync(distIndex) ? distIndex : devIndex;
   res.sendFile(fileToSend);
