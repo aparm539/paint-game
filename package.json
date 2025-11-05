@@ -1,0 +1,19 @@
+{
+  "name": "dice-roll-multiplayer-game",
+  "version": "1.0.0",
+  "description": "Multiplayer dice throwing combat game",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces",
+    "build": "npm run build --workspaces",
+    "start": "npm run start --workspaces"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}
+

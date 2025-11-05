@@ -1,0 +1,20 @@
+{
+  "name": "dice-game-client",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "start": "vite preview"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.8"
+  }
+}
+
