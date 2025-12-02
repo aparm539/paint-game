@@ -10,6 +10,7 @@ export interface Player {
   username: string;
   position: Position;
   color: string; // Avatar color for display
+  paintSupply: number; // Current paint supply (0-100)
   targetPosition?: Position; // For smooth interpolation (client-side only)
 }
 
@@ -30,24 +31,11 @@ export interface PaintGrid {
   colorMap: Map<number, string>; // Maps number to target color
 }
 
-export interface BalloonThrow {
+export interface PaintCellRequest {
   playerId: string;
-  startPos: Position;
-  velocity: Position;
-  angle: number;
-  color: string; // Color of the balloon being thrown
-  colorNumber: number; // The number associated with this color
-}
-
-export interface BalloonLand {
-  playerId: string;
-  username: string;
   position: Position;
-  startPos: Position;
-  velocity: Position;
   color: string;
   colorNumber: number;
-  timestamp: number;
 }
 
 export interface PaintEvent {
@@ -85,8 +73,7 @@ export interface PlayerMove {
 export const SocketEvents = {
   JOIN: 'join',
   MOVE: 'move',
-  THROW_BALLOON: 'throwBalloon',
-  BALLOON_LAND: 'balloonLand',
+  PAINT_CELL_REQUEST: 'paintCellRequest',
   PAINT_CELL: 'paintCell',
   PLAYER_JOINED: 'playerJoined',
   PLAYER_LEFT: 'playerLeft',
@@ -95,5 +82,11 @@ export const SocketEvents = {
   PLAYER_LIST: 'playerList',
   GAME_STATE: 'gameState',
   GRID_UPDATE: 'gridUpdate',
+  PAINT_SUPPLY_UPDATE: 'paintSupplyUpdate',
 } as const;
+
+export interface PaintSupplyUpdate {
+  playerId: string;
+  paintSupply: number;
+}
 

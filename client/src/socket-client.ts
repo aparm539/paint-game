@@ -2,13 +2,13 @@ import { io, Socket } from 'socket.io-client';
 import {
   SocketEvents,
   type Player,
-  type BalloonThrow,
-  type BalloonLand,
+  type PaintCellRequest,
   type PaintEvent,
   type GameProgress,
   type GameState,
   type PlayerMove,
   type GridCell,
+  type PaintSupplyUpdate,
 } from '../../shared/types.js';
 
 export class SocketClient {
@@ -16,13 +16,13 @@ export class SocketClient {
   private onPlayerListCallback?: (players: Player[]) => void;
   private onPlayerJoinedCallback?: (player: Player) => void;
   private onPlayerLeftCallback?: (data: { playerId: string }) => void;
-  private onBalloonLandCallback?: (balloon: BalloonLand) => void;
   private onPaintCellCallback?: (paint: PaintEvent) => void;
   private onGameProgressCallback?: (progress: GameProgress) => void;
   private onGameCompleteCallback?: (data: { message: string; progress: GameProgress }) => void;
   private onGameStateCallback?: (state: GameState) => void;
   private onGridUpdateCallback?: (grid: GridCell[][]) => void;
   private onPlayerMoveCallback?: (move: PlayerMove) => void;
+  private onPaintSupplyUpdateCallback?: (update: PaintSupplyUpdate) => void;
 
   constructor(serverUrl: string = 'http://localhost:3000') {
     this.socket = io(serverUrl);
@@ -45,10 +45,6 @@ export class SocketClient {
 
     this.socket.on(SocketEvents.PLAYER_LEFT, (data: { playerId: string }) => {
       this.onPlayerLeftCallback?.(data);
-    });
-
-    this.socket.on(SocketEvents.BALLOON_LAND, (balloon: BalloonLand) => {
-      this.onBalloonLandCallback?.(balloon);
     });
 
     this.socket.on(SocketEvents.PAINT_CELL, (paint: PaintEvent) => {
@@ -74,14 +70,18 @@ export class SocketClient {
     this.socket.on(SocketEvents.MOVE, (move: PlayerMove) => {
       this.onPlayerMoveCallback?.(move);
     });
+
+    this.socket.on(SocketEvents.PAINT_SUPPLY_UPDATE, (update: PaintSupplyUpdate) => {
+      this.onPaintSupplyUpdateCallback?.(update);
+    });
   }
 
   join(username: string, startPosition?: { x: number; y: number }): void {
     this.socket.emit(SocketEvents.JOIN, { username, startPosition });
   }
 
-  throwBalloon(throwEvent: BalloonThrow): void {
-    this.socket.emit(SocketEvents.THROW_BALLOON, throwEvent);
+  requestPaintCell(request: PaintCellRequest): void {
+    this.socket.emit(SocketEvents.PAINT_CELL_REQUEST, request);
   }
 
   movePlayer(move: PlayerMove): void {
@@ -109,10 +109,6 @@ export class SocketClient {
     this.onPlayerLeftCallback = callback;
   }
 
-  onBalloonLand(callback: (balloon: BalloonLand) => void): void {
-    this.onBalloonLandCallback = callback;
-  }
-
   onPaintCell(callback: (paint: PaintEvent) => void): void {
     this.onPaintCellCallback = callback;
   }
@@ -135,6 +131,10 @@ export class SocketClient {
 
   onPlayerMove(callback: (move: PlayerMove) => void): void {
     this.onPlayerMoveCallback = callback;
+  }
+
+  onPaintSupplyUpdate(callback: (update: PaintSupplyUpdate) => void): void {
+    this.onPaintSupplyUpdateCallback = callback;
   }
 
   disconnect(): void {

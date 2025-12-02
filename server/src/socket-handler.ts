@@ -2,20 +2,29 @@ import { Server, Socket } from 'socket.io';
 import {
   SocketEvents,
   type Player,
-  type BalloonThrow,
-  type BalloonLand,
+  type PaintCellRequest,
   type PaintEvent,
   type Position,
   type GameState,
   type GridCell,
   type GameProgress,
   type PlayerMove,
+  type PaintSupplyUpdate,
 } from '../../shared/types.js';
 
 const GRID_SIZE = parseInt(process.env.GRID_SIZE || '20'); // Grid size from env
 const CELL_PIXEL_SIZE = parseInt(process.env.CELL_PIXEL_SIZE || '50'); // Cell size from env
 const PAINT_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
 const NUM_COLORS = parseInt(process.env.NUM_COLORS || '6'); // Number of colors from env
+const GRID_PIXEL_SIZE = GRID_SIZE * CELL_PIXEL_SIZE; // Total grid size in pixels (e.g., 1000px)
+const GRID_HALF_SIZE = GRID_PIXEL_SIZE / 2; // Half of grid (e.g., 500px)
+// Recharge zone positioned to the right of the grid
+const RECHARGE_ZONE_CENTER_X = GRID_HALF_SIZE + 200; // 200px to the right of grid edge
+const RECHARGE_ZONE_CENTER_Y = 0; // Centered vertically with grid
+const RECHARGE_ZONE_RADIUS = 120; // 120px radius circle
+const MAX_PAINT_SUPPLY = 100;
+const PAINT_COST_PER_CELL = 5; // Paint supply cost per cell painted
+const RECHARGE_RATE = 2; // Paint supply recharged per movement update when in zone
 
 export class GameRoom {
   private players: Map<string, Player> = new Map();
@@ -72,6 +81,7 @@ export class GameRoom {
       username,
       position: startPosition,
       color: avatarColor,
+      paintSupply: MAX_PAINT_SUPPLY, // Start with full paint
     };
     this.players.set(socketId, player);
     return player;
@@ -93,38 +103,24 @@ export class GameRoom {
     const player = this.players.get(playerId);
     if (player) {
       player.position = position;
-    }
-  }
-
-  // Calculate landing position from throw parameters (top-down view)
-  // Uses same physics as client for consistency
-  private calculateLandingPosition(throwEvent: BalloonThrow, fieldWidth: number, fieldHeight: number): Position {
-    const friction = 0.95; // Top-down friction (balloon sliding)
-    
-    let x = throwEvent.startPos.x;
-    let y = throwEvent.startPos.y;
-    let vx = throwEvent.velocity.x;
-    let vy = throwEvent.velocity.y;
-    
-    let iterations = 0;
-    const maxIterations = 200;
-    
-    // Simulate physics until balloon comes to rest
-    while (iterations < maxIterations) {
-      x += vx;
-      y += vy;
-      vx *= friction;
-      vy *= friction;
       
-      // Stop if velocity is negligible
-      if (Math.abs(vx) < 0.1 && Math.abs(vy) < 0.1) {
-        break;
+      // Check if player is in recharge zone (circular area to the right of grid) and refill paint
+      const dx = position.x - RECHARGE_ZONE_CENTER_X;
+      const dy = position.y - RECHARGE_ZONE_CENTER_Y;
+      const distanceFromRechargeCenter = Math.sqrt(dx * dx + dy * dy);
+      const inRechargeZone = distanceFromRechargeCenter <= RECHARGE_ZONE_RADIUS;
+      
+      if (inRechargeZone && player.paintSupply < MAX_PAINT_SUPPLY) {
+        player.paintSupply = Math.min(MAX_PAINT_SUPPLY, player.paintSupply + RECHARGE_RATE);
+        
+        // Broadcast paint supply update
+        const update: PaintSupplyUpdate = {
+          playerId: player.id,
+          paintSupply: player.paintSupply,
+        };
+        this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, update);
       }
-      
-      iterations++;
     }
-    
-    return { x, y };
   }
 
   // Convert world position to grid coordinates
@@ -165,49 +161,45 @@ export class GameRoom {
     };
   }
 
-  // Process balloon throw and paint grid
-  processBalloonThrow(throwEvent: BalloonThrow, socketId: string): void {
+  // Process paint cell request from player trail
+  processPaintCell(request: PaintCellRequest, socketId: string): void {
     const player = this.getPlayer(socketId);
     if (!player) return;
 
-    console.log(`Processing balloon throw from ${player.username} with color ${throwEvent.color}`);
+    // Check if player has enough paint supply
+    if (player.paintSupply < PAINT_COST_PER_CELL) {
+      console.log(`Player ${player.username} has insufficient paint supply (${player.paintSupply})`);
+      return;
+    }
 
-    // Calculate landing position
-    const landingPosition = this.calculateLandingPosition(throwEvent, 10000, 10000);
-    
-    console.log(`Balloon landing at:`, landingPosition);
-    
-    // Create balloon land event
-    const balloonLand: BalloonLand = {
-      playerId: socketId,
-      username: player.username,
-      position: landingPosition,
-      startPos: throwEvent.startPos,
-      velocity: throwEvent.velocity,
-      color: throwEvent.color,
-      colorNumber: throwEvent.colorNumber,
-      timestamp: Date.now(),
-    };
+    console.log(`Processing paint request from ${player.username} with color ${request.color}`);
 
-    // Broadcast balloon landing
-    this.io.emit(SocketEvents.BALLOON_LAND, balloonLand);
-
-    // Check if balloon landed on grid
-    const gridCoords = this.worldToGrid(landingPosition);
+    // Check if position is on grid
+    const gridCoords = this.worldToGrid(request.position);
     
     if (gridCoords) {
       const cell = this.grid[gridCoords.y][gridCoords.x];
       
       // Check if the color matches and cell isn't already painted
-      const success = !cell.painted && cell.number === throwEvent.colorNumber;
+      const success = !cell.painted && cell.number === request.colorNumber;
       
       if (success) {
+        // Deduct paint supply
+        player.paintSupply = Math.max(0, player.paintSupply - PAINT_COST_PER_CELL);
+        
+        // Broadcast paint supply update
+        const supplyUpdate: PaintSupplyUpdate = {
+          playerId: player.id,
+          paintSupply: player.paintSupply,
+        };
+        this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, supplyUpdate);
+        
         // Paint the cell
-        cell.currentColor = throwEvent.color;
+        cell.currentColor = request.color;
         cell.painted = true;
-        console.log(`Cell (${gridCoords.x}, ${gridCoords.y}) painted with color ${throwEvent.color}!`);
+        console.log(`Cell (${gridCoords.x}, ${gridCoords.y}) painted with color ${request.color}! Paint supply: ${player.paintSupply}`);
       } else {
-        console.log(`Cell (${gridCoords.x}, ${gridCoords.y}) paint failed - already painted: ${cell.painted}, correct color: ${cell.number === throwEvent.colorNumber}`);
+        console.log(`Cell (${gridCoords.x}, ${gridCoords.y}) paint failed - already painted: ${cell.painted}, correct color: ${cell.number === request.colorNumber}`);
       }
       
       // Create paint event
@@ -216,8 +208,8 @@ export class GameRoom {
         username: player.username,
         cellX: gridCoords.x,
         cellY: gridCoords.y,
-        color: throwEvent.color,
-        colorNumber: throwEvent.colorNumber,
+        color: request.color,
+        colorNumber: request.colorNumber,
         success,
       };
       
@@ -242,7 +234,7 @@ export class GameRoom {
         }
       }
     } else {
-      console.log('Balloon landed outside grid');
+      console.log('Paint request outside grid');
     }
   }
 
@@ -312,9 +304,9 @@ export function setupSocketHandlers(io: Server): void {
       socket.broadcast.emit(SocketEvents.MOVE, data);
     });
 
-    // Handle balloon throw
-    socket.on(SocketEvents.THROW_BALLOON, (throwEvent: BalloonThrow) => {
-      gameRoom.processBalloonThrow(throwEvent, socket.id);
+    // Handle paint cell request
+    socket.on(SocketEvents.PAINT_CELL_REQUEST, (request: PaintCellRequest) => {
+      gameRoom.processPaintCell(request, socket.id);
     });
 
     // Handle disconnect

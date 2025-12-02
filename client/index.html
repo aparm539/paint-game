@@ -11,7 +11,7 @@
       <!-- Username Input Screen -->
       <div id="username-screen" class="screen">
         <div class="username-container">
-          <h1>🎨 Paint Balloon Game</h1>
+          <h1>Paint Balloon Game</h1>
           <p style="color: #666; margin-bottom: 1rem;">Work together to complete the color-by-numbers painting!</p>
           <input
             type="text"
@@ -34,12 +34,23 @@
             <!-- Color Palette -->
             <div id="color-palette"></div>
             
+            <!-- Paint Supply -->
+            <div style="background: rgba(255, 255, 255, 0.95); border-radius: 10px; padding: 1rem;">
+              <div id="paint-supply" style="font-weight: bold; margin-bottom: 0.5rem; color: #333;">Paint: 100%</div>
+              <div class="progress-bar-container">
+                <div id="paint-supply-bar" style="width: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);"></div>
+              </div>
+              <div style="font-size: 0.75rem; color: #666; margin-top: 0.5rem;">
+                Go to the recharge station to refill!
+              </div>
+            </div>
+            
             <!-- Instructions -->
             <div style="background: rgba(255, 255, 255, 0.95); border-radius: 10px; padding: 1rem; font-size: 0.85rem; color: #666;">
               <strong>How to Play:</strong><br>
               • Move: WASD or Arrow keys<br>
               • Select color: Number keys (1-6)<br>
-              • Throw balloon: Click & pull back (like a slingshot!)<br>
+              • Paint: Hold Space while moving<br>
               • Match numbers to colors!
             </div>
           </div>

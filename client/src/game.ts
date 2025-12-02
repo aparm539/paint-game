@@ -1,18 +1,12 @@
-import type { Player, BalloonThrow, BalloonLand, PaintEvent, GameProgress, Position, GridCell } from '../../shared/types.js';
-import { PhysicsEngine, type TrajectoryPoint } from './physics.js';
+import type { Player, PaintEvent, GameProgress, Position, GridCell, PaintSupplyUpdate } from '../../shared/types.js';
 import { SocketClient } from './socket-client.js';
 
 export class Game {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private socketClient: SocketClient;
-  private physics: PhysicsEngine;
   private players: Map<string, Player> = new Map();
   private currentPlayerId: string = '';
-  private isThrowing: boolean = false;
-  private throwStartPos: Position | null = null;
-  private throwStartTime: number = 0;
-  private trajectoryPreview: TrajectoryPoint[] = [];
   private avatarElements: Map<string, HTMLDivElement> = new Map();
   private cameraOffset: Position = { x: 0, y: 0 };
   private activeAnimations: Map<string, { cancel: () => void }> = new Map();
@@ -25,6 +19,11 @@ export class Game {
   private colorNumberMap: Record<number, string> = {};
   private progress: GameProgress = { totalCells: 0, paintedCells: 0, percentageComplete: 0 };
   
+  // Paint supply and recharge zone
+  private rechargeZoneCenterX: number = 0;
+  private rechargeZoneCenterY: number = 0;
+  private rechargeZoneRadius: number = 120;
+  
   // Color selection
   private selectedColorNumber: number = 1;
   
@@ -34,18 +33,18 @@ export class Game {
   private lastMoveEmit: number = 0;
   private moveEmitThrottle: number = 50; // ms
   
-  // Paint effects
-  private paintSplatters: Array<{ position: Position; color: string; timestamp: number; success: boolean }> = [];
-  
-  // Flying balloons
-  private flyingBalloons: Array<{
+  // Paint trail system
+  private isPainting: boolean = false;
+  private paintTrail: Array<{
     position: Position;
+    timestamp: number;
     color: string;
-    trajectory: TrajectoryPoint[];
-    startTime: number;
-    duration: number;
-    maxArcHeight: number;
+    processed: boolean;
   }> = [];
+  private lastTrailPoint: number = 0;
+  private trailPointInterval: number = 50; // Add trail point every 50ms
+  private trailLifetime: number = 1000; // Trail fades out after 1 second
+  private paintedCells: Set<string> = new Set(); // Track already painted cells to avoid duplicates
 
   constructor(canvas: HTMLCanvasElement, socketClient: SocketClient) {
     this.canvas = canvas;
@@ -55,7 +54,6 @@ export class Game {
     }
     this.ctx = context;
     this.socketClient = socketClient;
-    this.physics = new PhysicsEngine();
 
     // Set canvas size to match its display size
     this.resizeCanvas();
@@ -110,12 +108,7 @@ export class Game {
   }
 
   private setupEventHandlers(): void {
-    this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
-    this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
-    this.canvas.addEventListener('mouseup', (e) => this.handleMouseUp(e));
-    this.canvas.addEventListener('mouseleave', () => this.handleMouseLeave());
-    
-    // Keyboard movement
+    // Keyboard controls
     window.addEventListener('keydown', (e) => this.handleKeyDown(e));
     window.addEventListener('keyup', (e) => this.handleKeyUp(e));
   }
@@ -125,6 +118,21 @@ export class Game {
     if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
       e.preventDefault();
       this.keysPressed.add(key);
+    }
+    
+    // Space bar to start painting (hold down)
+    if (key === ' ' || e.code === 'Space') {
+      e.preventDefault();
+      if (!this.isPainting) {
+        const currentPlayer = this.players.get(this.currentPlayerId);
+        if (currentPlayer && currentPlayer.paintSupply > 0) {
+          this.isPainting = true;
+          this.updatePaintingStatusUI();
+          console.log('Painting enabled');
+        } else {
+          console.log('Cannot paint - no paint supply!');
+        }
+      }
     }
     
     // Number keys for color selection
@@ -138,6 +146,13 @@ export class Game {
   private handleKeyUp(e: KeyboardEvent): void {
     const key = e.key.toLowerCase();
     this.keysPressed.delete(key);
+    
+    // Space bar to stop painting (release)
+    if (key === ' ' || e.code === 'Space') {
+      this.isPainting = false;
+      this.updatePaintingStatusUI();
+      console.log('Painting disabled');
+    }
   }
 
   private updatePlayerMovement(): void {
@@ -165,8 +180,27 @@ export class Game {
       currentPlayer.position.x += dx;
       currentPlayer.position.y += dy;
 
-      // Emit to server (throttled)
+      // Stop painting if paint runs out
+      if (this.isPainting && currentPlayer.paintSupply <= 0) {
+        this.isPainting = false;
+        this.updatePaintingStatusUI();
+        console.log('Out of paint!');
+      }
+
+      // Add trail point if painting
       const now = Date.now();
+      if (this.isPainting && currentPlayer.paintSupply > 0 && now - this.lastTrailPoint > this.trailPointInterval) {
+        const selectedColor = this.colorNumberMap[this.selectedColorNumber] || this.colors[0];
+        this.paintTrail.push({
+          position: { ...currentPlayer.position },
+          timestamp: now,
+          color: selectedColor,
+          processed: false,
+        });
+        this.lastTrailPoint = now;
+      }
+
+      // Emit to server (throttled)
       if (now - this.lastMoveEmit > this.moveEmitThrottle) {
         this.socketClient.movePlayer({
           playerId: this.currentPlayerId,
@@ -214,10 +248,6 @@ export class Game {
       }
     });
 
-    this.socketClient.onBalloonLand((balloon) => {
-      this.handleBalloonLand(balloon);
-    });
-
     this.socketClient.onPaintCell((paint) => {
       this.handlePaintCell(paint);
     });
@@ -249,6 +279,12 @@ export class Game {
       this.colors = state.colors;
       this.colorNumberMap = state.colorNumberMap;
       this.progress = state.progress;
+      
+      // Calculate recharge zone position (to the right of grid)
+      const gridPixelSize = this.gridSize * this.cellPixelSize;
+      const gridHalfSize = gridPixelSize / 2;
+      this.rechargeZoneCenterX = gridHalfSize + 200; // 200px to the right of grid edge
+      this.rechargeZoneCenterY = 0; // Centered vertically
       
       // Update players - this must happen before creating avatars
       this.updatePlayers(state.players);
@@ -283,173 +319,21 @@ export class Game {
       // Update UI
       this.updatePlayerListUI();
       this.updateProgressUI();
+      this.updatePaintSupplyUI();
       this.createColorPaletteUI();
       
       console.log(`Game state loaded: ${state.players.length} players, grid ${this.gridSize}x${this.gridSize}, ${this.progress.paintedCells} cells painted`);
     });
-  }
 
-  private handleMouseDown(e: MouseEvent): void {
-    if (this.isThrowing) return;
-    
-    const rect = this.canvas.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
-    const worldPos = this.screenToWorld({ x: screenX, y: screenY });
-
-    const currentPlayer = this.players.get(this.currentPlayerId);
-    if (!currentPlayer) return;
-
-    // Check if clicking near own dice position (in world coordinates)
-    const distance = this.physics.distance(worldPos, currentPlayer.position);
-
-    // Only allow throwing if clicking near own dice
-    if (distance < 50) {
-      this.isThrowing = true;
-      this.throwStartPos = worldPos;
-      this.throwStartTime = Date.now();
-    }
-  }
-
-  private handleMouseMove(e: MouseEvent): void {
-    if (!this.isThrowing || !this.throwStartPos) return;
-
-    const rect = this.canvas.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
-    const worldPos = this.screenToWorld({ x: screenX, y: screenY });
-
-    // Get current player position
-    const currentPlayer = this.players.get(this.currentPlayerId);
-    if (!currentPlayer) return;
-
-    // Reverse the drag direction (slingshot mechanic: pull back to throw forward)
-    // Use current player position for consistent velocity calculation
-    const velocity = this.physics.calculateVelocityFromDrag(
-      worldPos,
-      currentPlayer.position,
-      0.3
-    );
-
-    // Calculate trajectory preview starting from avatar position
-    const fieldSize = 10000; // Large enough for any reasonable throw
-    this.trajectoryPreview = this.physics.calculateTrajectory(
-      currentPlayer.position,
-      velocity,
-      fieldSize,
-      fieldSize
-    );
-  }
-
-  private handleMouseUp(e: MouseEvent): void {
-    if (!this.isThrowing || !this.throwStartPos) return;
-
-    const rect = this.canvas.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
-    const worldPos = this.screenToWorld({ x: screenX, y: screenY });
-
-    const currentPlayer = this.players.get(this.currentPlayerId);
-    if (!currentPlayer) {
-      this.isThrowing = false;
-      this.throwStartPos = null;
-      this.trajectoryPreview = [];
-      return;
-    }
-
-    // Reverse the drag direction (slingshot mechanic: pull back to throw forward)
-    const velocity = this.physics.calculateVelocityFromDrag(
-      worldPos,
-      currentPlayer.position,
-      0.3
-    );
-
-    const selectedColor = this.colorNumberMap[this.selectedColorNumber] || this.colors[0];
-
-    const throwEvent: BalloonThrow = {
-      playerId: this.currentPlayerId,
-      startPos: currentPlayer.position,
-      velocity,
-      angle: Math.atan2(velocity.y, velocity.x),
-      color: selectedColor,
-      colorNumber: this.selectedColorNumber,
-    };
-
-    console.log('Throwing balloon:', throwEvent);
-    this.socketClient.throwBalloon(throwEvent);
-
-    this.isThrowing = false;
-    this.throwStartPos = null;
-    this.trajectoryPreview = [];
-  }
-
-  private handleMouseLeave(): void {
-    if (this.isThrowing) {
-      this.isThrowing = false;
-      this.throwStartPos = null;
-      this.trajectoryPreview = [];
-    }
-  }
-
-  private handleBalloonLand(balloon: BalloonLand): void {
-    console.log('Balloon landed:', balloon);
-    
-    // Calculate trajectory
-    const trajectory = this.physics.calculateTrajectory(
-      balloon.startPos,
-      balloon.velocity,
-      10000,
-      10000,
-      100
-    );
-
-    if (trajectory.length === 0) return;
-
-    // Calculate duration based on trajectory length
-    const msPerStep = 15;
-    const duration = Math.max(trajectory.length * msPerStep, 300);
-    
-    // Calculate distance for arc height
-    const distance = Math.sqrt(
-      Math.pow(balloon.position.x - balloon.startPos.x, 2) +
-      Math.pow(balloon.position.y - balloon.startPos.y, 2)
-    );
-    const maxArcHeight = Math.min(Math.max(distance * 0.3, 50), 200);
-
-    // Add flying balloon to render list
-    const flyingBalloon = {
-      position: { ...balloon.startPos },
-      color: balloon.color,
-      trajectory,
-      startTime: Date.now(),
-      duration,
-      maxArcHeight,
-    };
-    
-    this.flyingBalloons.push(flyingBalloon);
-
-    // Schedule balloon landing
-    setTimeout(() => {
-      // Remove from flying balloons
-      const index = this.flyingBalloons.indexOf(flyingBalloon);
-      if (index > -1) {
-        this.flyingBalloons.splice(index, 1);
+    this.socketClient.onPaintSupplyUpdate((update) => {
+      const player = this.players.get(update.playerId);
+      if (player) {
+        player.paintSupply = update.paintSupply;
+        if (update.playerId === this.currentPlayerId) {
+          this.updatePaintSupplyUI();
+        }
       }
-      
-      // Create splatter effect
-      const timestamp = Date.now();
-      this.paintSplatters.push({
-        position: balloon.position,
-        color: balloon.color,
-        timestamp,
-        success: false, // Will be updated by paint event
-      });
-      
-      // Remove splatter after 1 second
-      setTimeout(() => {
-        this.paintSplatters = this.paintSplatters.filter(s => s.timestamp !== timestamp);
-      }, 1000);
-    }, duration);
+    });
   }
 
   private handlePaintCell(paint: PaintEvent): void {
@@ -462,16 +346,6 @@ export class Game {
         cell.painted = true;
         cell.currentColor = paint.color;
       }
-    }
-    
-    // Update splatter to show success/failure
-    const recentSplatter = this.paintSplatters.find(s => {
-      const age = Date.now() - s.timestamp;
-      return age < 200; // Within 200ms
-    });
-    
-    if (recentSplatter) {
-      recentSplatter.success = paint.success;
     }
   }
 
@@ -605,6 +479,20 @@ export class Game {
     }
   }
 
+  private updatePaintingStatusUI(): void {
+    const currentPlayer = this.players.get(this.currentPlayerId);
+    if (!currentPlayer) return;
+    
+    const avatar = this.avatarElements.get(this.currentPlayerId);
+    if (avatar) {
+      if (this.isPainting) {
+        avatar.classList.add('painting');
+      } else {
+        avatar.classList.remove('painting');
+      }
+    }
+  }
+
 
   private startGameLoop(): void {
     const render = () => {
@@ -644,19 +532,17 @@ export class Game {
     this.ctx.fillStyle = '#FFFFFF';
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
+    // Draw recharge zone
+    this.drawRechargeZone();
+
     // Draw painting grid
     this.drawPaintingGrid();
 
-    // Draw trajectory preview
-    if (this.trajectoryPreview.length > 0) {
-      this.drawTrajectory();
-    }
-
-    // Draw flying balloons
-    this.drawFlyingBalloons();
-
-    // Draw paint splatters
-    this.drawPaintSplatters();
+    // Draw paint trail
+    this.drawPaintTrail();
+    
+    // Process trail for cell painting
+    this.processTrailPainting();
     
     // Draw position debug info
     this.drawDebugInfo();
@@ -712,65 +598,25 @@ export class Game {
     }
   }
 
-  private drawTrajectory(): void {
-    if (this.trajectoryPreview.length < 2) return;
-
-    this.ctx.strokeStyle = 'rgba(255, 255, 0, 0.6)';
-    this.ctx.lineWidth = 2;
-    this.ctx.setLineDash([5, 5]);
-    this.ctx.beginPath();
-
-    const firstPoint = this.trajectoryPreview[0];
-    const screenFirst = this.worldToScreen(firstPoint);
-    this.ctx.moveTo(screenFirst.x, screenFirst.y);
-
-    for (let i = 1; i < this.trajectoryPreview.length; i++) {
-      const point = this.trajectoryPreview[i];
-      const screenPoint = this.worldToScreen(point);
-      this.ctx.lineTo(screenPoint.x, screenPoint.y);
-    }
-
-    this.ctx.stroke();
-    this.ctx.setLineDash([]);
-
-    // Draw landing marker
-    if (this.trajectoryPreview.length > 0) {
-      const lastPoint = this.trajectoryPreview[this.trajectoryPreview.length - 1];
-      const screenLast = this.worldToScreen(lastPoint);
-      this.ctx.fillStyle = 'rgba(255, 255, 0, 0.3)';
-      this.ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
-      this.ctx.lineWidth = 2;
-      this.ctx.beginPath();
-      this.ctx.arc(screenLast.x, screenLast.y, 10, 0, Math.PI * 2);
-      this.ctx.fill();
-      this.ctx.stroke();
-    }
-  }
-
-  private drawFlyingBalloons(): void {
+  private drawPaintTrail(): void {
     const now = Date.now();
     
-    this.flyingBalloons.forEach((balloon) => {
-      const elapsed = now - balloon.startTime;
-      const progress = Math.min(elapsed / balloon.duration, 1);
+    // Remove old trail segments
+    this.paintTrail = this.paintTrail.filter(segment => {
+      return now - segment.timestamp < this.trailLifetime;
+    });
+    
+    if (this.paintTrail.length < 2) return;
+    
+    // Draw trail as connected line segments with fade
+    for (let i = 1; i < this.paintTrail.length; i++) {
+      const segment = this.paintTrail[i];
+      const prevSegment = this.paintTrail[i - 1];
       
-      // Use easing function for smooth animation
-      const easedProgress = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      const age = now - segment.timestamp;
+      const opacity = Math.max(0, 1 - age / this.trailLifetime);
       
-      // Interpolate along trajectory
-      const index = Math.floor(easedProgress * (balloon.trajectory.length - 1));
-      const point = balloon.trajectory[Math.min(index, balloon.trajectory.length - 1)];
-      
-      // Calculate parabolic arc height (peaks at 0.5 progress)
-      const arcHeight = balloon.maxArcHeight * 4 * progress * (1 - progress);
-      
-      // Update balloon position
-      balloon.position = { x: point.x, y: point.y };
-      
-      // Convert to screen coordinates
-      const screenPos = this.worldToScreen(balloon.position);
-      
-      // Parse the color
+      // Parse color
       const hexToRgb = (hex: string) => {
         const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
         return result ? {
@@ -780,107 +626,138 @@ export class Game {
         } : { r: 255, g: 0, b: 0 };
       };
       
-      const rgb = hexToRgb(balloon.color);
+      const rgb = hexToRgb(segment.color);
       
-      // Draw balloon shadow (on ground)
-      const shadowOpacity = 0.2 * (1 - progress * 0.5);
-      this.ctx.fillStyle = `rgba(0, 0, 0, ${shadowOpacity})`;
+      // Convert to screen coordinates
+      const screenPos = this.worldToScreen(segment.position);
+      const prevScreenPos = this.worldToScreen(prevSegment.position);
+      
+      // Draw line segment with width slightly smaller than cell size
+      this.ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${opacity * 0.7})`;
+      this.ctx.lineWidth = this.cellPixelSize * 0.85; // Slightly smaller than grid cell size
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
       this.ctx.beginPath();
-      this.ctx.ellipse(screenPos.x, screenPos.y, 15, 8, 0, 0, Math.PI * 2);
-      this.ctx.fill();
-      
-      // Draw balloon (elevated by arc height)
-      const balloonY = screenPos.y - arcHeight;
-      
-      // Scale balloon based on height for depth
-      const scale = 1 + (arcHeight / 200) * 0.3;
-      const balloonRadius = 12 * scale;
-      
-      // Draw balloon body
-      this.ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.9)`;
-      this.ctx.beginPath();
-      this.ctx.arc(screenPos.x, balloonY, balloonRadius, 0, Math.PI * 2);
-      this.ctx.fill();
-      
-      // Draw balloon highlight
-      this.ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-      this.ctx.beginPath();
-      this.ctx.arc(screenPos.x - balloonRadius * 0.3, balloonY - balloonRadius * 0.3, balloonRadius * 0.4, 0, Math.PI * 2);
-      this.ctx.fill();
-      
-      // Draw balloon outline
-      this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
-      this.ctx.lineWidth = 2;
-      this.ctx.beginPath();
-      this.ctx.arc(screenPos.x, balloonY, balloonRadius, 0, Math.PI * 2);
+      this.ctx.moveTo(prevScreenPos.x, prevScreenPos.y);
+      this.ctx.lineTo(screenPos.x, screenPos.y);
       this.ctx.stroke();
+    }
+  }
+
+  private processTrailPainting(): void {
+    const now = Date.now();
+    const paintDelay = 500; // Paint cells after 500ms
+    
+    this.paintTrail.forEach(segment => {
+      const age = now - segment.timestamp;
       
-      // Draw balloon string
-      this.ctx.strokeStyle = 'rgba(100, 100, 100, 0.6)';
-      this.ctx.lineWidth = 1;
-      this.ctx.beginPath();
-      this.ctx.moveTo(screenPos.x, balloonY + balloonRadius);
-      this.ctx.quadraticCurveTo(
-        screenPos.x + 3, 
-        balloonY + balloonRadius + 10,
-        screenPos.x, 
-        balloonY + balloonRadius + 15
-      );
-      this.ctx.stroke();
+      // Process segment if it's old enough and not yet processed
+      if (!segment.processed && age >= paintDelay) {
+        segment.processed = true;
+        
+        // Convert world position to grid coordinates
+        const gridCoords = this.worldToGrid(segment.position);
+        if (gridCoords) {
+          const cellKey = `${gridCoords.x},${gridCoords.y}`;
+          
+          // Only paint if not already painted in this session
+          if (!this.paintedCells.has(cellKey)) {
+            this.paintedCells.add(cellKey);
+            
+            // Request paint from server
+            this.socketClient.requestPaintCell({
+              playerId: this.currentPlayerId,
+              position: segment.position,
+              color: segment.color,
+              colorNumber: this.selectedColorNumber,
+            });
+          }
+        }
+      }
     });
   }
 
-  private drawPaintSplatters(): void {
-    const now = Date.now();
-    this.paintSplatters.forEach((splatter) => {
-      const age = now - splatter.timestamp;
-      const opacity = Math.max(0, 1 - age / 1000);
-      
-      const screenPos = this.worldToScreen(splatter.position);
-      
-      // Parse the color and add opacity
-      const hexToRgb = (hex: string) => {
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? {
-          r: parseInt(result[1], 16),
-          g: parseInt(result[2], 16),
-          b: parseInt(result[3], 16)
-        } : { r: 255, g: 0, b: 0 };
-      };
-      
-      const rgb = hexToRgb(splatter.color);
-      this.ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${opacity * 0.6})`;
-      
-      // Draw splatter effect
-      this.ctx.beginPath();
-      this.ctx.arc(screenPos.x, screenPos.y, 25, 0, Math.PI * 2);
-      this.ctx.fill();
-      
-      // Draw success/failure indicator
-      if (splatter.success) {
-        this.ctx.strokeStyle = `rgba(0, 255, 0, ${opacity})`;
-        this.ctx.lineWidth = 3;
-        this.ctx.beginPath();
-        this.ctx.arc(screenPos.x, screenPos.y, 30, 0, Math.PI * 2);
-        this.ctx.stroke();
-      } else if (age > 200) {
-        // Show X for failure after animation settles
-        this.ctx.strokeStyle = `rgba(255, 0, 0, ${opacity})`;
-        this.ctx.lineWidth = 3;
-        this.ctx.beginPath();
-        this.ctx.moveTo(screenPos.x - 15, screenPos.y - 15);
-        this.ctx.lineTo(screenPos.x + 15, screenPos.y + 15);
-        this.ctx.moveTo(screenPos.x + 15, screenPos.y - 15);
-        this.ctx.lineTo(screenPos.x - 15, screenPos.y + 15);
-        this.ctx.stroke();
-      }
-    });
+  private worldToGrid(position: Position): { x: number; y: number } | null {
+    // Grid is centered at origin (0, 0)
+    const gridPixelSize = this.gridSize * this.cellPixelSize;
+    const halfGrid = gridPixelSize / 2;
+    
+    // Convert world coordinates to grid coordinates
+    const gridX = Math.floor((position.x + halfGrid) / this.cellPixelSize);
+    const gridY = Math.floor((position.y + halfGrid) / this.cellPixelSize);
+    
+    // Check if within bounds
+    if (gridX >= 0 && gridX < this.gridSize && gridY >= 0 && gridY < this.gridSize) {
+      return { x: gridX, y: gridY };
+    }
+    
+    return null;
   }
 
   private drawDebugInfo(): void {
     const currentPlayer = this.players.get(this.currentPlayerId);
     if (!currentPlayer) return;
 
+  }
+
+  private drawRechargeZone(): void {
+    if (this.rechargeZoneCenterX === 0) return;
+    
+    // Draw the recharge zone as a circular area to the right of the grid
+    const zoneCenter = this.worldToScreen({ 
+      x: this.rechargeZoneCenterX, 
+      y: this.rechargeZoneCenterY 
+    });
+    
+    // Draw filled circle
+    this.ctx.fillStyle = 'rgba(100, 200, 100, 0.2)';
+    this.ctx.beginPath();
+    this.ctx.arc(zoneCenter.x, zoneCenter.y, this.rechargeZoneRadius, 0, Math.PI * 2);
+    this.ctx.fill();
+    
+    // Draw border (dashed)
+    this.ctx.strokeStyle = 'rgba(50, 150, 50, 0.7)';
+    this.ctx.lineWidth = 4;
+    this.ctx.setLineDash([10, 5]);
+    this.ctx.beginPath();
+    this.ctx.arc(zoneCenter.x, zoneCenter.y, this.rechargeZoneRadius, 0, Math.PI * 2);
+    this.ctx.stroke();
+    this.ctx.setLineDash([]);
+    
+    // Draw label
+    this.ctx.fillStyle = 'rgba(50, 150, 50, 0.9)';
+    this.ctx.font = 'bold 20px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    this.ctx.fillText('RECHARGE', zoneCenter.x, zoneCenter.y - 10);
+    this.ctx.font = 'bold 16px Arial';
+    this.ctx.fillStyle = 'rgba(50, 150, 50, 0.7)';
+    this.ctx.fillText('STATION', zoneCenter.x, zoneCenter.y + 15);
+  }
+
+  private updatePaintSupplyUI(): void {
+    const currentPlayer = this.players.get(this.currentPlayerId);
+    if (!currentPlayer) return;
+    
+    const paintSupplyEl = document.getElementById('paint-supply');
+    const paintSupplyBar = document.getElementById('paint-supply-bar');
+    
+    if (paintSupplyEl) {
+      paintSupplyEl.textContent = `Paint: ${Math.round(currentPlayer.paintSupply)}%`;
+    }
+    
+    if (paintSupplyBar) {
+      paintSupplyBar.style.width = `${currentPlayer.paintSupply}%`;
+      
+      // Change color based on supply level
+      if (currentPlayer.paintSupply > 50) {
+        paintSupplyBar.style.background = 'linear-gradient(90deg, #4caf50, #8bc34a)';
+      } else if (currentPlayer.paintSupply > 20) {
+        paintSupplyBar.style.background = 'linear-gradient(90deg, #ff9800, #ffb74d)';
+      } else {
+        paintSupplyBar.style.background = 'linear-gradient(90deg, #f44336, #e57373)';
+      }
+    }
   }
 
   setCurrentPlayer(playerId: string): void {
