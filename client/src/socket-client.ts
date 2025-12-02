@@ -9,7 +9,10 @@ import {
   type PlayerMove,
   type GridCell,
   type PaintSupplyUpdate,
+  type GoldUpdate,
   type Position,
+  type PurchaseUpgradeRequest,
+  type PurchaseUpgradeResponse,
 } from '../../shared/types.js';
 import { GAME_CONFIG } from '../../shared/config.js';
 
@@ -24,6 +27,8 @@ type SocketEventMap = {
   gridUpdate: (grid: GridCell[][]) => void;
   playerMove: (move: PlayerMove) => void;
   paintSupplyUpdate: (update: PaintSupplyUpdate) => void;
+  goldUpdate: (update: GoldUpdate) => void;
+  upgradePurchased: (response: PurchaseUpgradeResponse) => void;
   connect: () => void;
   disconnect: () => void;
   reconnectAttempt: (attemptNumber: number) => void;
@@ -105,6 +110,14 @@ export class SocketClient {
     this.socket.on(SocketEvents.PAINT_SUPPLY_UPDATE, (update: PaintSupplyUpdate) => {
       this.emit('paintSupplyUpdate', update);
     });
+
+    this.socket.on(SocketEvents.GOLD_UPDATE, (update: GoldUpdate) => {
+      this.emit('goldUpdate', update);
+    });
+
+    this.socket.on(SocketEvents.UPGRADE_PURCHASED, (response: PurchaseUpgradeResponse) => {
+      this.emit('upgradePurchased', response);
+    });
   }
 
   private emit<K extends keyof SocketEventMap>(event: K, ...args: Parameters<SocketEventMap[K]>): void {
@@ -167,6 +180,10 @@ export class SocketClient {
 
   getSocketId(): string {
     return this.socket.id || '';
+  }
+
+  purchaseUpgrade(request: PurchaseUpgradeRequest): void {
+    this.socket.emit(SocketEvents.PURCHASE_UPGRADE, request);
   }
 
   isConnected(): boolean {

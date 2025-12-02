@@ -11,6 +11,8 @@ export interface Player {
   position: Position;
   color: string; // Avatar color for display
   paintSupply: number; // Current paint supply (0-100)
+  gold: number; // Currency earned from completing grids
+  upgrades: PlayerUpgrades; // Player's purchased upgrades
   targetPosition?: Position; // For smooth interpolation (client-side only)
 }
 
@@ -73,10 +75,46 @@ export const SocketEvents = {
   GAME_STATE: 'gameState',
   GRID_UPDATE: 'gridUpdate',
   PAINT_SUPPLY_UPDATE: 'paintSupplyUpdate',
+  GOLD_UPDATE: 'goldUpdate',
+  PURCHASE_UPGRADE: 'purchaseUpgrade',
+  UPGRADE_PURCHASED: 'upgradePurchased',
 } as const;
 
 export interface PaintSupplyUpdate {
   playerId: string;
   paintSupply: number;
+}
+
+export interface GoldUpdate {
+  playerId: string;
+  gold: number;
+}
+
+// Shop and Upgrades
+export interface PlayerUpgrades {
+  movementSpeed: number; // Level 0-5, each level increases speed
+}
+
+export interface UpgradeInfo {
+  id: keyof PlayerUpgrades;
+  name: string;
+  description: string;
+  maxLevel: number;
+  baseCost: number;
+  costMultiplier: number; // Cost increases by this factor per level
+  effectPerLevel: number; // How much the stat increases per level
+}
+
+export interface PurchaseUpgradeRequest {
+  playerId: string;
+  upgradeId: keyof PlayerUpgrades;
+}
+
+export interface PurchaseUpgradeResponse {
+  success: boolean;
+  upgradeId: keyof PlayerUpgrades;
+  newLevel: number;
+  newGold: number;
+  message: string;
 }
 

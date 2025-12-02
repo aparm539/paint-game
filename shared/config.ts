@@ -18,6 +18,9 @@ export const GAME_CONFIG = {
   PAINT_COST_PER_CELL: 5,
   RECHARGE_RATE: 2,
   
+  // Gold rewards
+  GOLD_REWARD_BASE: 5, // Gold per grid cell on completion (reward = gridSize * gridSize * base)
+  
   // Recharge zone
   RECHARGE_ZONE_RADIUS: 120,
   RECHARGE_ZONE_OFFSET_X: 200, // Offset from grid edge
@@ -35,6 +38,19 @@ export const GAME_CONFIG = {
   RECONNECTION_ATTEMPTS: 5,
   RECONNECTION_DELAY: 1000, // ms
   RECONNECTION_DELAY_MAX: 5000, // ms
+  
+  // Shop upgrades
+  UPGRADES: {
+    movementSpeed: {
+      id: 'movementSpeed' as const,
+      name: 'Swift Feet',
+      description: 'Increase movement speed',
+      maxLevel: 5,
+      baseCost: 10,
+      costMultiplier: 2, // Cost doubles each level: 10, 20, 40, 80, 160
+      effectPerLevel: 0.5, // +0.5 speed per level
+    },
+  },
 } as const;
 
 // Computed values

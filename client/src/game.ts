@@ -1,4 +1,4 @@
-import type { Player, PaintEvent, GameProgress, Position, GridCell, PaintSupplyUpdate } from '../../shared/types.js';
+import type { Player, PaintEvent, GameProgress, Position, GridCell, PaintSupplyUpdate, PlayerUpgrades, PurchaseUpgradeResponse } from '../../shared/types.js';
 import { GAME_CONFIG } from '../../shared/config.js';
 import { worldToGrid } from '../../shared/utils.js';
 import { SocketClient } from './socket-client.js';
@@ -31,15 +31,21 @@ export class Game {
   
   // Movement
   private keysPressed: Set<string> = new Set();
+  private baseMovementSpeed: number = GAME_CONFIG.MOVEMENT_SPEED;
   private movementSpeed: number = GAME_CONFIG.MOVEMENT_SPEED;
   private lastMoveEmit: number = 0;
   private moveEmitThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE;
   
+  // Player upgrades
+  private upgrades: PlayerUpgrades = { movementSpeed: 0 };
+  private isShopOpen: boolean = false;
+  
   // Painting state
   private isPainting: boolean = false;
   private paintedCells: Set<string> = new Set();
-  private pendingPaintCells: Map<string, number> = new Map(); // Cells waiting for server confirmation (cellKey -> timestamp)
-  private pendingCellTimeout: number = 2000; // Clear pending cells after 2 seconds without response
+  private pendingPaintCells: Map<string, { timestamp: number; retries: number; position: Position; colorNumber: number }> = new Map();
+  private pendingCellTimeout: number = 500; // Clear pending cells after 500ms without response (reduced for faster recovery)
+  private maxRetries: number = 2; // Maximum retries for a pending cell
   private lastPaintTime: number = 0;
   private paintThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE; // Reuse throttle timing
   
@@ -212,53 +218,71 @@ export class Game {
 
   private tryPaintCurrentCell(position: Position): void {
     const gridCoords = worldToGrid(position, this.gridSize, this.cellPixelSize);
-    if (gridCoords) {
-      const cellKey = `${gridCoords.x},${gridCoords.y}`;
-      
-      // Validate grid coordinates are within current grid bounds
-      if (gridCoords.x >= this.gridSize || gridCoords.y >= this.gridSize) {
-        console.warn(`[PAINT] Grid coords out of bounds: ${cellKey} (gridSize: ${this.gridSize})`);
-        return;
-      }
-      
-      // Check if cell exists in current grid
-      const cell = this.grid[gridCoords.y]?.[gridCoords.x];
-      if (!cell) {
-        console.warn(`[PAINT] Cell not found in grid: ${cellKey}`);
-        return;
-      }
-      
-      // Only paint if not already painted or pending
-      const alreadyPainted = this.paintedCells.has(cellKey);
-      const isPending = this.pendingPaintCells.has(cellKey);
-      
-      if (alreadyPainted) {
-        console.log(`[PAINT] Cell ${cellKey} already in paintedCells, skipping`);
-        return;
-      }
-      
-      if (isPending) {
-        console.log(`[PAINT] Cell ${cellKey} already pending, skipping`);
-        return;
-      }
-      
-      // Also check the actual grid state to catch desync issues
-      if (cell.painted) {
-        console.warn(`[PAINT] Cell ${cellKey} is painted in grid but NOT in paintedCells set - syncing`);
-        this.paintedCells.add(cellKey);
-        return;
-      }
-      
-      console.log(`[PAINT] Requesting paint for cell ${cellKey}, color: ${this.selectedColorNumber}, gridSize: ${this.gridSize}`);
-      this.pendingPaintCells.set(cellKey, Date.now());
-      
-      // Request paint from server
-      this.socketClient.requestPaintCell({
-        playerId: this.currentPlayerId,
-        position: position,
-        colorNumber: this.selectedColorNumber,
-      });
+    if (!gridCoords) {
+      console.log(`[PAINT] Position (${position.x.toFixed(1)}, ${position.y.toFixed(1)}) is outside grid bounds`);
+      return;
     }
+    
+    const cellKey = `${gridCoords.x},${gridCoords.y}`;
+    
+    // Validate grid coordinates are within current grid bounds
+    if (gridCoords.x >= this.gridSize || gridCoords.y >= this.gridSize) {
+      console.warn(`[PAINT] Grid coords out of bounds: ${cellKey} (gridSize: ${this.gridSize})`);
+      return;
+    }
+    
+    // Check if cell exists in current grid
+    const cell = this.grid[gridCoords.y]?.[gridCoords.x];
+    if (!cell) {
+      console.warn(`[PAINT] Cell not found in grid: ${cellKey}`);
+      return;
+    }
+    
+    // Only paint if not already painted or pending
+    const alreadyPainted = this.paintedCells.has(cellKey);
+    const pendingInfo = this.pendingPaintCells.get(cellKey);
+    
+    if (alreadyPainted) {
+      // Silently skip already painted cells (common during movement)
+      return;
+    }
+    
+    if (pendingInfo) {
+      // Silently skip pending cells (will be handled by retry logic)
+      return;
+    }
+    
+    // Also check the actual grid state to catch desync issues
+    if (cell.painted) {
+      console.warn(`[PAINT] Cell ${cellKey} is painted in grid but NOT in paintedCells set - syncing`);
+      this.paintedCells.add(cellKey);
+      return;
+    }
+    
+    // Check if selected color matches the cell's required color
+    if (cell.number !== this.selectedColorNumber) {
+      console.log(`[PAINT] Cell ${cellKey} requires color ${cell.number}, but selected color is ${this.selectedColorNumber}`);
+      return;
+    }
+    
+    console.log(`[PAINT] Requesting paint for cell ${cellKey}, color: ${this.selectedColorNumber}, cell requires: ${cell.number}`);
+    this.sendPaintRequest(cellKey, position, this.selectedColorNumber, 0);
+  }
+  
+  private sendPaintRequest(cellKey: string, position: Position, colorNumber: number, retries: number): void {
+    this.pendingPaintCells.set(cellKey, {
+      timestamp: Date.now(),
+      retries,
+      position,
+      colorNumber,
+    });
+    
+    // Request paint from server
+    this.socketClient.requestPaintCell({
+      playerId: this.currentPlayerId,
+      position: position,
+      colorNumber: colorNumber,
+    });
   }
 
   private setupSocketHandlers(): void {
@@ -434,7 +458,16 @@ export class Game {
       this.updatePlayerListUI();
       this.updateProgressUI();
       this.updatePaintSupplyUI();
+      this.updateGoldUI();
       this.createColorPaletteUI();
+      this.createShopUI();
+      
+      // Sync upgrades from server state
+      const currentPlayer = this.players.get(this.currentPlayerId);
+      if (currentPlayer && currentPlayer.upgrades) {
+        this.upgrades = { ...currentPlayer.upgrades };
+        this.applyUpgradeEffects();
+      }
     });
 
     this.socketClient.on('paintSupplyUpdate', (update) => {
@@ -446,12 +479,36 @@ export class Game {
         }
       }
     });
+
+    this.socketClient.on('goldUpdate', (update) => {
+      const player = this.players.get(update.playerId);
+      if (player) {
+        player.gold = update.gold;
+        if (update.playerId === this.currentPlayerId) {
+          this.updateGoldUI();
+          this.updateShopUI(); // Update shop when gold changes
+        }
+      }
+    });
+
+    this.socketClient.on('upgradePurchased', (response: PurchaseUpgradeResponse) => {
+      this.handleUpgradePurchased(response);
+    });
   }
 
   private handlePaintCell(paint: PaintEvent): void {
     const cellKey = `${paint.cellX},${paint.cellY}`;
+    const isMyPaint = paint.playerId === this.currentPlayerId;
     
-    console.log(`[PAINT] Received paint response for ${cellKey}: success=${paint.success}, color=${paint.color}`);
+    // Handle failure response for position outside grid bounds (-1,-1)
+    if (paint.cellX < 0 || paint.cellY < 0) {
+      if (isMyPaint) {
+        // Clear all pending cells from this position since we don't know which cell it was
+        // This is a rare edge case
+        console.warn(`[PAINT] Received failure for position outside grid bounds`);
+      }
+      return;
+    }
     
     // Check if coordinates are valid for current grid
     if (paint.cellX >= this.gridSize || paint.cellY >= this.gridSize) {
@@ -461,12 +518,18 @@ export class Game {
       return;
     }
     
-    // Remove from pending set
-    const wasPending = this.pendingPaintCells.has(cellKey);
-    this.pendingPaintCells.delete(cellKey);
-    
-    if (!wasPending) {
-      console.warn(`[PAINT] Received paint response for cell ${cellKey} that was NOT in pending set`);
+    // Remove from pending set if this was our request
+    if (isMyPaint) {
+      const wasPending = this.pendingPaintCells.has(cellKey);
+      this.pendingPaintCells.delete(cellKey);
+      
+      if (paint.success) {
+        console.log(`[PAINT] ✓ Cell ${cellKey} painted by me. Total: ${this.paintedCells.size + 1}`);
+      } else if (wasPending) {
+        console.log(`[PAINT] ✗ Cell ${cellKey} paint failed - can retry`);
+      }
+    } else if (paint.success) {
+      console.log(`[PAINT] Cell ${cellKey} painted by ${paint.username}`);
     }
     
     // Update grid cell if we have it
@@ -477,9 +540,6 @@ export class Game {
         cell.currentColor = paint.color;
         // Mark as successfully painted so we don't try again
         this.paintedCells.add(cellKey);
-        console.log(`[PAINT] Cell ${cellKey} painted successfully. Total painted: ${this.paintedCells.size}`);
-      } else {
-        console.log(`[PAINT] Cell ${cellKey} paint failed - can retry`);
       }
       // If paint failed, pendingPaintCells is already cleared so player can retry
     } else {
@@ -646,22 +706,34 @@ export class Game {
 
   /**
    * Clean up pending paint cells that haven't received a response
-   * This prevents cells from being blocked forever if the server doesn't respond
+   * Retries requests up to maxRetries before giving up
    */
   private cleanupStalePendingCells(): void {
     const now = Date.now();
-    const staleKeys: string[] = [];
+    const toRetry: { cellKey: string; info: { position: Position; colorNumber: number; retries: number } }[] = [];
+    const toRemove: string[] = [];
     
-    this.pendingPaintCells.forEach((timestamp, cellKey) => {
-      if (now - timestamp > this.pendingCellTimeout) {
-        staleKeys.push(cellKey);
+    this.pendingPaintCells.forEach((info, cellKey) => {
+      if (now - info.timestamp > this.pendingCellTimeout) {
+        if (info.retries < this.maxRetries) {
+          toRetry.push({ cellKey, info });
+        } else {
+          toRemove.push(cellKey);
+        }
       }
     });
     
-    if (staleKeys.length > 0) {
-      console.warn(`[PAINT] Cleaning up ${staleKeys.length} stale pending cells:`, staleKeys);
-      staleKeys.forEach(key => this.pendingPaintCells.delete(key));
+    // Remove cells that have exceeded max retries
+    if (toRemove.length > 0) {
+      console.warn(`[PAINT] Giving up on ${toRemove.length} cells after max retries:`, toRemove);
+      toRemove.forEach(key => this.pendingPaintCells.delete(key));
     }
+    
+    // Retry cells that haven't exceeded max retries
+    toRetry.forEach(({ cellKey, info }) => {
+      console.log(`[PAINT] Retrying cell ${cellKey} (attempt ${info.retries + 2}/${this.maxRetries + 1})`);
+      this.sendPaintRequest(cellKey, info.position, info.colorNumber, info.retries + 1);
+    });
   }
 
   private updateAllAvatarPositions(): void {
@@ -808,6 +880,16 @@ export class Game {
     }
   }
 
+  private updateGoldUI(): void {
+    const currentPlayer = this.players.get(this.currentPlayerId);
+    if (!currentPlayer) return;
+    
+    const goldDisplayEl = document.getElementById('gold-display');
+    if (goldDisplayEl) {
+      goldDisplayEl.textContent = `🪙 ${currentPlayer.gold}`;
+    }
+  }
+
   setCurrentPlayer(playerId: string): void {
     this.currentPlayerId = playerId;
     const currentPlayerEl = document.getElementById('current-player');
@@ -919,6 +1001,144 @@ export class Game {
     if (overlay) {
       overlay.classList.add('hidden');
     }
+  }
+
+  // Shop methods
+  private handleUpgradePurchased(response: PurchaseUpgradeResponse): void {
+    if (response.success) {
+      // Update local upgrade state
+      this.upgrades[response.upgradeId] = response.newLevel;
+      
+      // Update player's upgrade state
+      const player = this.players.get(this.currentPlayerId);
+      if (player) {
+        player.upgrades[response.upgradeId] = response.newLevel;
+        player.gold = response.newGold;
+      }
+      
+      // Apply the upgrade effect
+      this.applyUpgradeEffects();
+      
+      // Update UI
+      this.updateGoldUI();
+      this.updateShopUI();
+      
+      // Show success message
+      this.showShopMessage(response.message, 'success');
+    } else {
+      // Show error message
+      this.showShopMessage(response.message, 'error');
+    }
+  }
+
+  private applyUpgradeEffects(): void {
+    // Apply movement speed upgrade
+    const speedLevel = this.upgrades.movementSpeed;
+    const speedBonus = speedLevel * GAME_CONFIG.UPGRADES.movementSpeed.effectPerLevel;
+    this.movementSpeed = this.baseMovementSpeed + speedBonus;
+  }
+
+  private showShopMessage(message: string, type: 'success' | 'error'): void {
+    const messageEl = document.getElementById('shop-message');
+    if (messageEl) {
+      messageEl.textContent = message;
+      messageEl.className = `shop-message ${type}`;
+      messageEl.classList.remove('hidden');
+      
+      // Hide after 2 seconds
+      setTimeout(() => {
+        messageEl.classList.add('hidden');
+      }, 2000);
+    }
+  }
+
+  private toggleShop(): void {
+    this.isShopOpen = !this.isShopOpen;
+    const shopPanel = document.getElementById('shop-panel');
+    if (shopPanel) {
+      if (this.isShopOpen) {
+        shopPanel.classList.remove('hidden');
+        this.updateShopUI();
+      } else {
+        shopPanel.classList.add('hidden');
+      }
+    }
+  }
+
+  private createShopUI(): void {
+    const shopContainer = document.getElementById('shop-container');
+    if (!shopContainer) return;
+
+    // Create shop button
+    const shopButton = document.createElement('button');
+    shopButton.id = 'shop-button';
+    shopButton.textContent = '🛒 Shop';
+    shopButton.onclick = () => this.toggleShop();
+    shopContainer.appendChild(shopButton);
+
+    // Create shop panel
+    const shopPanel = document.createElement('div');
+    shopPanel.id = 'shop-panel';
+    shopPanel.className = 'hidden';
+    shopPanel.innerHTML = `
+      <div class="shop-header">
+        <h3>🛒 Shop</h3>
+        <button id="shop-close" class="shop-close">✕</button>
+      </div>
+      <div id="shop-message" class="shop-message hidden"></div>
+      <div id="shop-items"></div>
+    `;
+    shopContainer.appendChild(shopPanel);
+
+    // Add close button handler
+    document.getElementById('shop-close')?.addEventListener('click', () => this.toggleShop());
+
+    this.updateShopUI();
+  }
+
+  private updateShopUI(): void {
+    const shopItems = document.getElementById('shop-items');
+    if (!shopItems) return;
+
+    const currentPlayer = this.players.get(this.currentPlayerId);
+    const playerGold = currentPlayer?.gold || 0;
+
+    shopItems.innerHTML = '';
+
+    // Movement Speed Upgrade
+    const upgradeConfig = GAME_CONFIG.UPGRADES.movementSpeed;
+    const currentLevel = this.upgrades.movementSpeed;
+    const isMaxLevel = currentLevel >= upgradeConfig.maxLevel;
+    const cost = isMaxLevel ? 0 : upgradeConfig.baseCost * Math.pow(upgradeConfig.costMultiplier, currentLevel);
+    const canAfford = playerGold >= cost;
+
+    const itemDiv = document.createElement('div');
+    itemDiv.className = 'shop-item';
+    
+    itemDiv.innerHTML = `
+      <div class="shop-item-info">
+        <div class="shop-item-name">🏃 ${upgradeConfig.name}</div>
+        <div class="shop-item-desc">${upgradeConfig.description}</div>
+        <div class="shop-item-level">Level: ${currentLevel}/${upgradeConfig.maxLevel}</div>
+        <div class="shop-item-effect">Current bonus: +${(currentLevel * upgradeConfig.effectPerLevel).toFixed(1)} speed</div>
+      </div>
+      <button class="shop-buy-btn ${isMaxLevel ? 'maxed' : (!canAfford ? 'disabled' : '')}" 
+              ${isMaxLevel || !canAfford ? 'disabled' : ''}>
+        ${isMaxLevel ? 'MAX' : `🪙 ${cost}`}
+      </button>
+    `;
+
+    const buyBtn = itemDiv.querySelector('.shop-buy-btn');
+    if (buyBtn && !isMaxLevel && canAfford) {
+      buyBtn.addEventListener('click', () => {
+        this.socketClient.purchaseUpgrade({
+          playerId: this.currentPlayerId,
+          upgradeId: 'movementSpeed',
+        });
+      });
+    }
+
+    shopItems.appendChild(itemDiv);
   }
 }
 

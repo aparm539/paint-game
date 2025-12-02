@@ -10,6 +10,10 @@ import {
   type GameProgress,
   type PlayerMove,
   type PaintSupplyUpdate,
+  type GoldUpdate,
+  type PurchaseUpgradeRequest,
+  type PurchaseUpgradeResponse,
+  type PlayerUpgrades,
 } from '../../shared/types.js';
 import { GAME_CONFIG } from '../../shared/config.js';
 import { worldToGrid, isInCircularZone, clamp } from '../../shared/utils.js';
@@ -78,6 +82,10 @@ export class GameRoom {
       position: startPosition,
       color: avatarColor,
       paintSupply: GAME_CONFIG.MAX_PAINT_SUPPLY,
+      gold: 0,
+      upgrades: {
+        movementSpeed: 0,
+      },
     };
     this.players.set(socketId, player);
     return player;
@@ -146,51 +154,49 @@ export class GameRoom {
     return worldToGrid(position, this.currentGridSize, CELL_PIXEL_SIZE);
   }
 
+  // Helper to send paint failure response when we can't determine grid coords
+  private sendPaintFailure(socketId: string, username: string, request: PaintCellRequest, socket: Socket): void {
+    // Try to get grid coords for the response, use -1,-1 if outside bounds
+    const gridCoords = this.getGridCoords(request.position) || { x: -1, y: -1 };
+    const failEvent: PaintEvent = {
+      playerId: socketId,
+      username: username,
+      cellX: gridCoords.x,
+      cellY: gridCoords.y,
+      color: '',
+      colorNumber: request.colorNumber,
+      success: false,
+    };
+    socket.emit(SocketEvents.PAINT_CELL, failEvent);
+  }
+
   // Process paint cell request from player trail
   processPaintCell(request: PaintCellRequest, socketId: string, socket: Socket): void {
     const player = this.getPlayer(socketId);
     if (!player) {
-      console.log(`[PAINT] Request from unknown player: ${socketId}`);
+      // Unknown player - send failure response
+      this.sendPaintFailure(socketId, 'Unknown', request, socket);
       return;
     }
 
     // Check if player has enough paint supply
     if (player.paintSupply < GAME_CONFIG.PAINT_COST_PER_CELL) {
-      console.log(`[PAINT] Player ${player.username} has insufficient paint: ${player.paintSupply}`);
+      // Insufficient paint - send failure response
+      this.sendPaintFailure(socketId, player.username, request, socket);
       return;
     }
 
     // Get grid coordinates from player position
     const gridCoords = this.getGridCoords(request.position);
     if (!gridCoords) {
-      console.log(`[PAINT] Position outside grid bounds: ${JSON.stringify(request.position)} (gridSize: ${this.currentGridSize})`);
+      // Outside grid bounds - send failure response
+      this.sendPaintFailure(socketId, player.username, request, socket);
       return;
     }
 
     const cell = this.grid[gridCoords.y]?.[gridCoords.x];
     if (!cell) {
-      console.log(`[PAINT] Cell not found: ${gridCoords.x},${gridCoords.y}`);
-      return;
-    }
-
-    // Check if cell can be painted with the selected color
-    // Send failure response so client can clear pendingPaintCells
-    if (cell.painted) {
-      console.log(`[PAINT] Cell ${gridCoords.x},${gridCoords.y} already painted by ${player.username}`);
-      const failEvent: PaintEvent = {
-        playerId: socketId,
-        username: player.username,
-        cellX: gridCoords.x,
-        cellY: gridCoords.y,
-        color: cell.currentColor || '',
-        colorNumber: request.colorNumber,
-        success: false,
-      };
-      socket.emit(SocketEvents.PAINT_CELL, failEvent);
-      return;
-    }
-    if (cell.number !== request.colorNumber) {
-      console.log(`[PAINT] Wrong color for cell ${gridCoords.x},${gridCoords.y}: expected ${cell.number}, got ${request.colorNumber}`);
+      // Cell not found - send failure response with coords
       const failEvent: PaintEvent = {
         playerId: socketId,
         username: player.username,
@@ -204,7 +210,38 @@ export class GameRoom {
       return;
     }
 
-    console.log(`[PAINT] Success: Cell ${gridCoords.x},${gridCoords.y} painted by ${player.username} with color ${request.colorNumber}`);
+    // Check if cell can be painted with the selected color
+    // Broadcast failure response so all clients can sync state
+    if (cell.painted) {
+      const failEvent: PaintEvent = {
+        playerId: socketId,
+        username: player.username,
+        cellX: gridCoords.x,
+        cellY: gridCoords.y,
+        color: cell.currentColor || '',
+        colorNumber: request.colorNumber,
+        success: false,
+      };
+      // Use io.emit to broadcast to all clients including sender for consistency
+      this.io.emit(SocketEvents.PAINT_CELL, failEvent);
+      return;
+    }
+    if (cell.number !== request.colorNumber) {
+      const failEvent: PaintEvent = {
+        playerId: socketId,
+        username: player.username,
+        cellX: gridCoords.x,
+        cellY: gridCoords.y,
+        color: '',
+        colorNumber: request.colorNumber,
+        success: false,
+      };
+      // Use io.emit to broadcast to all clients including sender for consistency
+      this.io.emit(SocketEvents.PAINT_CELL, failEvent);
+      return;
+    }
+
+    console.log(`[PAINT] Cell ${gridCoords.x},${gridCoords.y} painted by ${player.username}`);
 
     // Success: deduct paint supply
     player.paintSupply = Math.max(0, player.paintSupply - GAME_CONFIG.PAINT_COST_PER_CELL);
@@ -243,6 +280,9 @@ export class GameRoom {
 
     // Check if game is complete
     if (progress.percentageComplete === 100) {
+      // Award gold to all players before growing grid
+      this.awardGoldToAllPlayers();
+      
       this.io.emit(SocketEvents.GAME_COMPLETE, {
         message: 'Painting Complete!',
         progress,
@@ -257,6 +297,23 @@ export class GameRoom {
     this.io.emit(SocketEvents.PLAYER_LIST, this.getAllPlayers());
   }
 
+  // Award gold to all players when grid is completed (scales with grid size)
+  private awardGoldToAllPlayers(): void {
+    const goldReward = this.currentGridSize * GAME_CONFIG.GOLD_REWARD_BASE;
+    
+    console.log(`[GOLD] Awarding ${goldReward} gold to all ${this.players.size} players (grid: ${this.currentGridSize}x${this.currentGridSize})`);
+    
+    this.players.forEach((player) => {
+      player.gold += goldReward;
+      
+      const goldUpdate: GoldUpdate = {
+        playerId: player.id,
+        gold: player.gold,
+      };
+      this.io.emit(SocketEvents.GOLD_UPDATE, goldUpdate);
+    });
+  }
+
   getGameState(): GameState {
     return {
       players: this.getAllPlayers(),
@@ -267,6 +324,89 @@ export class GameRoom {
       colorNumberMap: this.colorNumberMap,
       progress: this.calculateProgress(),
     };
+  }
+
+  // Process upgrade purchase request
+  processPurchaseUpgrade(request: PurchaseUpgradeRequest, socketId: string, socket: Socket): void {
+    const player = this.getPlayer(socketId);
+    if (!player) {
+      const response: PurchaseUpgradeResponse = {
+        success: false,
+        upgradeId: request.upgradeId,
+        newLevel: 0,
+        newGold: 0,
+        message: 'Player not found',
+      };
+      socket.emit(SocketEvents.UPGRADE_PURCHASED, response);
+      return;
+    }
+
+    const upgradeConfig = GAME_CONFIG.UPGRADES[request.upgradeId];
+    if (!upgradeConfig) {
+      const response: PurchaseUpgradeResponse = {
+        success: false,
+        upgradeId: request.upgradeId,
+        newLevel: player.upgrades[request.upgradeId] || 0,
+        newGold: player.gold,
+        message: 'Invalid upgrade',
+      };
+      socket.emit(SocketEvents.UPGRADE_PURCHASED, response);
+      return;
+    }
+
+    const currentLevel = player.upgrades[request.upgradeId] || 0;
+    
+    // Check if already at max level
+    if (currentLevel >= upgradeConfig.maxLevel) {
+      const response: PurchaseUpgradeResponse = {
+        success: false,
+        upgradeId: request.upgradeId,
+        newLevel: currentLevel,
+        newGold: player.gold,
+        message: 'Already at max level',
+      };
+      socket.emit(SocketEvents.UPGRADE_PURCHASED, response);
+      return;
+    }
+
+    // Calculate cost for next level
+    const cost = upgradeConfig.baseCost * Math.pow(upgradeConfig.costMultiplier, currentLevel);
+    
+    // Check if player has enough gold
+    if (player.gold < cost) {
+      const response: PurchaseUpgradeResponse = {
+        success: false,
+        upgradeId: request.upgradeId,
+        newLevel: currentLevel,
+        newGold: player.gold,
+        message: `Not enough gold (need ${cost})`,
+      };
+      socket.emit(SocketEvents.UPGRADE_PURCHASED, response);
+      return;
+    }
+
+    // Process purchase
+    player.gold -= cost;
+    player.upgrades[request.upgradeId] = currentLevel + 1;
+
+    console.log(`[SHOP] ${player.username} purchased ${upgradeConfig.name} level ${currentLevel + 1} for ${cost} gold`);
+
+    // Send success response to the purchasing player
+    const response: PurchaseUpgradeResponse = {
+      success: true,
+      upgradeId: request.upgradeId,
+      newLevel: currentLevel + 1,
+      newGold: player.gold,
+      message: `Upgraded ${upgradeConfig.name} to level ${currentLevel + 1}!`,
+    };
+    socket.emit(SocketEvents.UPGRADE_PURCHASED, response);
+
+    // Broadcast gold update to all players
+    const goldUpdate: GoldUpdate = {
+      playerId: player.id,
+      gold: player.gold,
+    };
+    this.io.emit(SocketEvents.GOLD_UPDATE, goldUpdate);
   }
 
   // Grow the grid after completion: +1 until size 10, then 5% growth
@@ -335,6 +475,11 @@ export function setupSocketHandlers(io: Server): void {
     // Handle paint cell request
     socket.on(SocketEvents.PAINT_CELL_REQUEST, (request: PaintCellRequest) => {
       gameRoom.processPaintCell(request, socket.id, socket);
+    });
+
+    // Handle upgrade purchase request
+    socket.on(SocketEvents.PURCHASE_UPGRADE, (request: PurchaseUpgradeRequest) => {
+      gameRoom.processPurchaseUpgrade(request, socket.id, socket);
     });
 
     // Handle disconnect
