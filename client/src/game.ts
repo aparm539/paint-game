@@ -38,7 +38,8 @@ export class Game {
   // Painting state
   private isPainting: boolean = false;
   private paintedCells: Set<string> = new Set();
-  private pendingPaintCells: Set<string> = new Set(); // Cells waiting for server confirmation
+  private pendingPaintCells: Map<string, number> = new Map(); // Cells waiting for server confirmation (cellKey -> timestamp)
+  private pendingCellTimeout: number = 2000; // Clear pending cells after 2 seconds without response
   private lastPaintTime: number = 0;
   private paintThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE; // Reuse throttle timing
   
@@ -130,6 +131,9 @@ export class Game {
         if (currentPlayer && currentPlayer.paintSupply > 0) {
           this.isPainting = true;
           this.updatePaintingStatusUI();
+          // Immediately try to paint the cell we're standing on
+          this.tryPaintCurrentCell(currentPlayer.position);
+          this.lastPaintTime = Date.now();
         }
       }
     }
@@ -181,20 +185,8 @@ export class Game {
       currentPlayer.position.x += dx;
       currentPlayer.position.y += dy;
 
-      // Stop painting if paint runs out
-      if (this.isPainting && currentPlayer.paintSupply <= 0) {
-        this.isPainting = false;
-        this.updatePaintingStatusUI();
-      }
-
-      // Paint cell immediately if painting
-      const now = Date.now();
-      if (this.isPainting && currentPlayer.paintSupply > 0 && now - this.lastPaintTime > this.paintThrottle) {
-        this.tryPaintCurrentCell(currentPlayer.position);
-        this.lastPaintTime = now;
-      }
-
       // Emit to server (throttled)
+      const now = Date.now();
       if (now - this.lastMoveEmit > this.moveEmitThrottle) {
         this.socketClient.movePlayer({
           playerId: this.currentPlayerId,
@@ -203,6 +195,19 @@ export class Game {
         this.lastMoveEmit = now;
       }
     }
+
+    // Stop painting if paint runs out
+    if (this.isPainting && currentPlayer.paintSupply <= 0) {
+      this.isPainting = false;
+      this.updatePaintingStatusUI();
+    }
+
+    // Paint cell if painting (works when moving OR stationary)
+    const now = Date.now();
+    if (this.isPainting && currentPlayer.paintSupply > 0 && now - this.lastPaintTime > this.paintThrottle) {
+      this.tryPaintCurrentCell(currentPlayer.position);
+      this.lastPaintTime = now;
+    }
   }
 
   private tryPaintCurrentCell(position: Position): void {
@@ -210,17 +215,49 @@ export class Game {
     if (gridCoords) {
       const cellKey = `${gridCoords.x},${gridCoords.y}`;
       
-      // Only paint if not already painted or pending
-      if (!this.paintedCells.has(cellKey) && !this.pendingPaintCells.has(cellKey)) {
-        this.pendingPaintCells.add(cellKey);
-        
-        // Request paint from server
-        this.socketClient.requestPaintCell({
-          playerId: this.currentPlayerId,
-          position: position,
-          colorNumber: this.selectedColorNumber,
-        });
+      // Validate grid coordinates are within current grid bounds
+      if (gridCoords.x >= this.gridSize || gridCoords.y >= this.gridSize) {
+        console.warn(`[PAINT] Grid coords out of bounds: ${cellKey} (gridSize: ${this.gridSize})`);
+        return;
       }
+      
+      // Check if cell exists in current grid
+      const cell = this.grid[gridCoords.y]?.[gridCoords.x];
+      if (!cell) {
+        console.warn(`[PAINT] Cell not found in grid: ${cellKey}`);
+        return;
+      }
+      
+      // Only paint if not already painted or pending
+      const alreadyPainted = this.paintedCells.has(cellKey);
+      const isPending = this.pendingPaintCells.has(cellKey);
+      
+      if (alreadyPainted) {
+        console.log(`[PAINT] Cell ${cellKey} already in paintedCells, skipping`);
+        return;
+      }
+      
+      if (isPending) {
+        console.log(`[PAINT] Cell ${cellKey} already pending, skipping`);
+        return;
+      }
+      
+      // Also check the actual grid state to catch desync issues
+      if (cell.painted) {
+        console.warn(`[PAINT] Cell ${cellKey} is painted in grid but NOT in paintedCells set - syncing`);
+        this.paintedCells.add(cellKey);
+        return;
+      }
+      
+      console.log(`[PAINT] Requesting paint for cell ${cellKey}, color: ${this.selectedColorNumber}, gridSize: ${this.gridSize}`);
+      this.pendingPaintCells.set(cellKey, Date.now());
+      
+      // Request paint from server
+      this.socketClient.requestPaintCell({
+        playerId: this.currentPlayerId,
+        position: position,
+        colorNumber: this.selectedColorNumber,
+      });
     }
   }
 
@@ -296,23 +333,62 @@ export class Game {
     });
 
     this.socketClient.on('gridUpdate', (grid) => {
+      // Check for grid size mismatch (can happen during grid growth transition)
+      if (grid.length !== this.gridSize || (grid[0] && grid[0].length !== this.gridSize)) {
+        console.warn(`[GRID_UPDATE] Grid size mismatch! Received ${grid.length}x${grid[0]?.length || 0}, expected ${this.gridSize}x${this.gridSize}. Waiting for gameState.`);
+        // Don't update - wait for gameState which will sync everything properly
+        return;
+      }
+      
       this.grid = grid;
+      
+      // Sync paintedCells with grid state to catch cells painted by other players
+      let syncedCount = 0;
+      for (let y = 0; y < grid.length; y++) {
+        for (let x = 0; x < grid[y].length; x++) {
+          const cellKey = `${x},${y}`;
+          if (grid[y][x].painted && !this.paintedCells.has(cellKey)) {
+            this.paintedCells.add(cellKey);
+            syncedCount++;
+          }
+        }
+      }
+      if (syncedCount > 0) {
+        console.log(`[GRID_UPDATE] Synced ${syncedCount} painted cells from grid update`);
+      }
     });
 
     this.socketClient.on('gameState', (state) => {
+      console.log(`[GAME_STATE] Received gameState - gridSize: ${state.gridSize}, players: ${state.players.length}`);
       
-      // Clear painted cells cache if grid size changed (new round)
+      // Always clear and rebuild painted cells cache from server state
+      // This ensures sync after reconnect, new round, or joining mid-game
+      const oldPaintedCount = this.paintedCells.size;
+      const oldPendingCount = this.pendingPaintCells.size;
+      this.paintedCells.clear();
+      this.pendingPaintCells.clear();
+      console.log(`[GAME_STATE] Cleared paintedCells (was ${oldPaintedCount}) and pendingPaintCells (was ${oldPendingCount})`);
+      
+      // Check if grid size changed (new round)
       if (state.gridSize !== this.gridSize) {
-        this.paintedCells.clear();
-        this.pendingPaintCells.clear();
         this.isPainting = false; // Stop painting on new round
         this.updatePaintingStatusUI();
-        console.log(`Grid size changed from ${this.gridSize} to ${state.gridSize} - cleared paint cache`);
+        console.log(`[GAME_STATE] Grid size changed from ${this.gridSize} to ${state.gridSize}`);
       }
       
-      // Update all game state data
-      this.grid = state.grid;
+      // Update all game state data - IMPORTANT: update gridSize BEFORE processing grid
       this.gridSize = state.gridSize;
+      this.grid = state.grid;
+      
+      // Rebuild paintedCells from grid state to sync with server
+      for (let y = 0; y < state.grid.length; y++) {
+        for (let x = 0; x < state.grid[y].length; x++) {
+          if (state.grid[y][x].painted) {
+            this.paintedCells.add(`${x},${y}`);
+          }
+        }
+      }
+      console.log(`[GAME_STATE] Synced paintedCells: ${this.paintedCells.size} cells already painted out of ${this.gridSize * this.gridSize} total`);
       this.cellPixelSize = state.cellPixelSize;
       this.colors = state.colors;
       this.colorNumberMap = state.colorNumberMap;
@@ -375,8 +451,23 @@ export class Game {
   private handlePaintCell(paint: PaintEvent): void {
     const cellKey = `${paint.cellX},${paint.cellY}`;
     
+    console.log(`[PAINT] Received paint response for ${cellKey}: success=${paint.success}, color=${paint.color}`);
+    
+    // Check if coordinates are valid for current grid
+    if (paint.cellX >= this.gridSize || paint.cellY >= this.gridSize) {
+      console.warn(`[PAINT] Paint response for cell outside current grid bounds: ${cellKey} (gridSize: ${this.gridSize})`);
+      // Still remove from pending to prevent blocking
+      this.pendingPaintCells.delete(cellKey);
+      return;
+    }
+    
     // Remove from pending set
+    const wasPending = this.pendingPaintCells.has(cellKey);
     this.pendingPaintCells.delete(cellKey);
+    
+    if (!wasPending) {
+      console.warn(`[PAINT] Received paint response for cell ${cellKey} that was NOT in pending set`);
+    }
     
     // Update grid cell if we have it
     if (this.grid[paint.cellY] && this.grid[paint.cellY][paint.cellX]) {
@@ -386,8 +477,13 @@ export class Game {
         cell.currentColor = paint.color;
         // Mark as successfully painted so we don't try again
         this.paintedCells.add(cellKey);
+        console.log(`[PAINT] Cell ${cellKey} painted successfully. Total painted: ${this.paintedCells.size}`);
+      } else {
+        console.log(`[PAINT] Cell ${cellKey} paint failed - can retry`);
       }
       // If paint failed, pendingPaintCells is already cleared so player can retry
+    } else {
+      console.warn(`[PAINT] Grid cell ${cellKey} not found in local grid`);
     }
   }
 
@@ -541,10 +637,31 @@ export class Game {
       this.updateCamera();
       this.updatePlayerMovement();
       this.updateAllAvatarPositions();
+      this.cleanupStalePendingCells();
       this.draw();
       requestAnimationFrame(render);
     };
     render();
+  }
+
+  /**
+   * Clean up pending paint cells that haven't received a response
+   * This prevents cells from being blocked forever if the server doesn't respond
+   */
+  private cleanupStalePendingCells(): void {
+    const now = Date.now();
+    const staleKeys: string[] = [];
+    
+    this.pendingPaintCells.forEach((timestamp, cellKey) => {
+      if (now - timestamp > this.pendingCellTimeout) {
+        staleKeys.push(cellKey);
+      }
+    });
+    
+    if (staleKeys.length > 0) {
+      console.warn(`[PAINT] Cleaning up ${staleKeys.length} stale pending cells:`, staleKeys);
+      staleKeys.forEach(key => this.pendingPaintCells.delete(key));
+    }
   }
 
   private updateAllAvatarPositions(): void {

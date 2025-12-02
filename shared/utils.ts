@@ -2,6 +2,11 @@
 
 import type { Position } from './types.js';
 
+// Small epsilon to handle floating point precision issues at cell boundaries
+// This prevents Math.floor from producing incorrect results when positions
+// are exactly on cell boundaries (e.g., -25.0 becoming -25.000000001)
+const GRID_EPSILON = 0.0001;
+
 /**
  * Convert world coordinates to grid cell coordinates
  * Returns null if the position is outside the grid bounds
@@ -16,8 +21,9 @@ export function worldToGrid(
   const halfGrid = gridPixelSize / 2;
   
   // Convert world coordinates to grid coordinates
-  const gridX = Math.floor((position.x + halfGrid) / cellPixelSize);
-  const gridY = Math.floor((position.y + halfGrid) / cellPixelSize);
+  // Add GRID_EPSILON to handle floating point precision at cell boundaries
+  const gridX = Math.floor((position.x + halfGrid + GRID_EPSILON) / cellPixelSize);
+  const gridY = Math.floor((position.y + halfGrid + GRID_EPSILON) / cellPixelSize);
   
   // Check if within bounds
   if (gridX >= 0 && gridX < gridSize && gridY >= 0 && gridY < gridSize) {

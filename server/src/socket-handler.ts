@@ -147,23 +147,64 @@ export class GameRoom {
   }
 
   // Process paint cell request from player trail
-  processPaintCell(request: PaintCellRequest, socketId: string): void {
+  processPaintCell(request: PaintCellRequest, socketId: string, socket: Socket): void {
     const player = this.getPlayer(socketId);
-    if (!player) return;
+    if (!player) {
+      console.log(`[PAINT] Request from unknown player: ${socketId}`);
+      return;
+    }
 
     // Check if player has enough paint supply
-    if (player.paintSupply < GAME_CONFIG.PAINT_COST_PER_CELL) return;
+    if (player.paintSupply < GAME_CONFIG.PAINT_COST_PER_CELL) {
+      console.log(`[PAINT] Player ${player.username} has insufficient paint: ${player.paintSupply}`);
+      return;
+    }
 
     // Get grid coordinates from player position
     const gridCoords = this.getGridCoords(request.position);
-    if (!gridCoords) return;
+    if (!gridCoords) {
+      console.log(`[PAINT] Position outside grid bounds: ${JSON.stringify(request.position)} (gridSize: ${this.currentGridSize})`);
+      return;
+    }
 
     const cell = this.grid[gridCoords.y]?.[gridCoords.x];
-    if (!cell) return;
+    if (!cell) {
+      console.log(`[PAINT] Cell not found: ${gridCoords.x},${gridCoords.y}`);
+      return;
+    }
 
     // Check if cell can be painted with the selected color
-    if (cell.painted) return;
-    if (cell.number !== request.colorNumber) return;
+    // Send failure response so client can clear pendingPaintCells
+    if (cell.painted) {
+      console.log(`[PAINT] Cell ${gridCoords.x},${gridCoords.y} already painted by ${player.username}`);
+      const failEvent: PaintEvent = {
+        playerId: socketId,
+        username: player.username,
+        cellX: gridCoords.x,
+        cellY: gridCoords.y,
+        color: cell.currentColor || '',
+        colorNumber: request.colorNumber,
+        success: false,
+      };
+      socket.emit(SocketEvents.PAINT_CELL, failEvent);
+      return;
+    }
+    if (cell.number !== request.colorNumber) {
+      console.log(`[PAINT] Wrong color for cell ${gridCoords.x},${gridCoords.y}: expected ${cell.number}, got ${request.colorNumber}`);
+      const failEvent: PaintEvent = {
+        playerId: socketId,
+        username: player.username,
+        cellX: gridCoords.x,
+        cellY: gridCoords.y,
+        color: '',
+        colorNumber: request.colorNumber,
+        success: false,
+      };
+      socket.emit(SocketEvents.PAINT_CELL, failEvent);
+      return;
+    }
+
+    console.log(`[PAINT] Success: Cell ${gridCoords.x},${gridCoords.y} painted by ${player.username} with color ${request.colorNumber}`);
 
     // Success: deduct paint supply
     player.paintSupply = Math.max(0, player.paintSupply - GAME_CONFIG.PAINT_COST_PER_CELL);
@@ -240,10 +281,13 @@ export class GameRoom {
       this.currentGridSize = Math.ceil(this.currentGridSize * 1.05);
     }
     
-    console.log(`Grid growing from ${oldSize}x${oldSize} to ${this.currentGridSize}x${this.currentGridSize}`);
+    console.log(`[GRID] Growing from ${oldSize}x${oldSize} to ${this.currentGridSize}x${this.currentGridSize}`);
+    console.log(`[GRID] Old painted count was: ${this.paintedCellsCount}`);
     
     // Reinitialize the grid with the new size
     this.initializeGrid();
+    
+    console.log(`[GRID] New grid initialized. Painted count reset to: ${this.paintedCellsCount}`);
     
     // Broadcast the new game state to all players
     // Players stay where they are - no repositioning
@@ -290,7 +334,7 @@ export function setupSocketHandlers(io: Server): void {
 
     // Handle paint cell request
     socket.on(SocketEvents.PAINT_CELL_REQUEST, (request: PaintCellRequest) => {
-      gameRoom.processPaintCell(request, socket.id);
+      gameRoom.processPaintCell(request, socket.id, socket);
     });
 
     // Handle disconnect
