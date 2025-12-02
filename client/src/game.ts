@@ -47,6 +47,9 @@ export class Game {
   private trailPointInterval: number = GAME_CONFIG.TRAIL_POINT_INTERVAL;
   private trailLifetime: number = GAME_CONFIG.TRAIL_LIFETIME;
   private paintedCells: Set<string> = new Set();
+  
+  // Connection state
+  private isDisconnected: boolean = false;
 
   constructor(canvas: HTMLCanvasElement, socketClient: SocketClient) {
     this.canvas = canvas;
@@ -64,6 +67,9 @@ export class Game {
     this.setupEventHandlers();
     this.setupSocketHandlers();
     this.startGameLoop();
+    
+    // Provide position getter for reconnection
+    this.socketClient.setPositionProvider(() => this.getCurrentPosition());
   }
 
   private resizeCanvas(): void {
@@ -154,6 +160,9 @@ export class Game {
   }
 
   private updatePlayerMovement(): void {
+    // Don't process movement while disconnected
+    if (this.isDisconnected) return;
+    
     const currentPlayer = this.players.get(this.currentPlayerId);
     if (!currentPlayer) return;
 
@@ -209,6 +218,23 @@ export class Game {
   }
 
   private setupSocketHandlers(): void {
+    // Connection state handlers
+    this.socketClient.on('disconnect', () => {
+      this.handleDisconnect();
+    });
+    
+    this.socketClient.on('connect', () => {
+      this.handleReconnect();
+    });
+    
+    this.socketClient.on('reconnectAttempt', (attemptNumber) => {
+      this.updateConnectionOverlay(`Reconnecting... (attempt ${attemptNumber}/${GAME_CONFIG.RECONNECTION_ATTEMPTS})`);
+    });
+    
+    this.socketClient.on('reconnectFailed', () => {
+      this.showReconnectButton();
+    });
+
     this.socketClient.on('playerList', (players) => {
       this.updatePlayers(players);
       this.updatePlayerListUI();
@@ -267,6 +293,12 @@ export class Game {
     });
 
     this.socketClient.on('gameState', (state) => {
+      
+      // Clear painted cells cache if grid size changed (new round)
+      if (state.gridSize !== this.gridSize) {
+        this.paintedCells.clear();
+        console.log(`Grid size changed from ${this.gridSize} to ${state.gridSize} - cleared paint cache`);
+      }
       
       // Update all game state data
       this.grid = state.grid;
@@ -721,6 +753,110 @@ export class Game {
     const player = this.players.get(playerId);
     if (currentPlayerEl && player) {
       currentPlayerEl.textContent = `You: ${player.username}`;
+    }
+  }
+  
+  getCurrentPosition(): Position | undefined {
+    return this.players.get(this.currentPlayerId)?.position;
+  }
+  
+  private handleDisconnect(): void {
+    this.isDisconnected = true;
+    
+    // Stop painting and clear input state
+    this.isPainting = false;
+    this.keysPressed.clear();
+    this.paintTrail = [];
+    
+    this.showConnectionOverlay('Connection lost - Reconnecting...');
+  }
+  
+  private handleReconnect(): void {
+    // Only process if we were previously disconnected (not initial connect)
+    if (!this.isDisconnected) return;
+    
+    this.isDisconnected = false;
+    
+    // Get old and new player IDs
+    const oldId = this.currentPlayerId;
+    const newId = this.socketClient.getSocketId();
+    
+    // Migrate player data to new socket ID
+    if (oldId && oldId !== newId) {
+      this.migratePlayerToNewId(oldId, newId);
+    }
+    
+    this.currentPlayerId = newId;
+    
+    // Clear painted cells tracking for fresh sync
+    this.paintedCells.clear();
+    
+    // Rejoin to get fresh game state
+    this.socketClient.rejoin();
+    
+    this.hideConnectionOverlay();
+  }
+  
+  private migratePlayerToNewId(oldId: string, newId: string): void {
+    // Migrate player data
+    const player = this.players.get(oldId);
+    if (player) {
+      player.id = newId;
+      this.players.delete(oldId);
+      this.players.set(newId, player);
+    }
+    
+    // Migrate avatar element
+    const avatar = this.avatarElements.get(oldId);
+    if (avatar) {
+      avatar.id = `avatar-${newId}`;
+      this.avatarElements.delete(oldId);
+      this.avatarElements.set(newId, avatar);
+    }
+  }
+  
+  private showConnectionOverlay(message: string): void {
+    let overlay = document.getElementById('connection-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'connection-overlay';
+      overlay.innerHTML = `
+        <div class="connection-overlay-content">
+          <div class="spinner"></div>
+          <p id="connection-message">${message}</p>
+          <button id="reconnect-button" class="hidden">Reconnect</button>
+        </div>
+      `;
+      document.getElementById('game-screen')?.appendChild(overlay);
+      
+      // Add click handler for reconnect button
+      document.getElementById('reconnect-button')?.addEventListener('click', () => {
+        this.updateConnectionOverlay('Connecting...');
+        document.getElementById('reconnect-button')?.classList.add('hidden');
+        this.socketClient.manualReconnect();
+      });
+    } else {
+      overlay.classList.remove('hidden');
+      this.updateConnectionOverlay(message);
+    }
+  }
+  
+  private updateConnectionOverlay(message: string): void {
+    const messageEl = document.getElementById('connection-message');
+    if (messageEl) {
+      messageEl.textContent = message;
+    }
+  }
+  
+  private showReconnectButton(): void {
+    this.updateConnectionOverlay('Connection failed');
+    document.getElementById('reconnect-button')?.classList.remove('hidden');
+  }
+  
+  private hideConnectionOverlay(): void {
+    const overlay = document.getElementById('connection-overlay');
+    if (overlay) {
+      overlay.classList.add('hidden');
     }
   }
 }

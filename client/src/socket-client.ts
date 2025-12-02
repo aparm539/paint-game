@@ -9,7 +9,9 @@ import {
   type PlayerMove,
   type GridCell,
   type PaintSupplyUpdate,
+  type Position,
 } from '../../shared/types.js';
+import { GAME_CONFIG } from '../../shared/config.js';
 
 type SocketEventMap = {
   playerList: (players: Player[]) => void;
@@ -24,14 +26,25 @@ type SocketEventMap = {
   paintSupplyUpdate: (update: PaintSupplyUpdate) => void;
   connect: () => void;
   disconnect: () => void;
+  reconnectAttempt: (attemptNumber: number) => void;
+  reconnectFailed: () => void;
 };
 
 export class SocketClient {
   private socket: Socket;
   private eventHandlers: Map<string, Set<Function>> = new Map();
+  
+  // Cached credentials for reconnection
+  private cachedUsername: string = '';
+  private positionProvider: (() => Position | undefined) | null = null;
 
   constructor(serverUrl: string = 'http://localhost:3000') {
-    this.socket = io(serverUrl);
+    this.socket = io(serverUrl, {
+      reconnection: true,
+      reconnectionAttempts: GAME_CONFIG.RECONNECTION_ATTEMPTS,
+      reconnectionDelay: GAME_CONFIG.RECONNECTION_DELAY,
+      reconnectionDelayMax: GAME_CONFIG.RECONNECTION_DELAY_MAX,
+    });
     this.setupSocketListeners();
   }
 
@@ -42,6 +55,15 @@ export class SocketClient {
 
     this.socket.on('disconnect', () => {
       this.emit('disconnect');
+    });
+    
+    // Reconnection events from Socket.IO manager
+    this.socket.io.on('reconnect_attempt', (attempt: number) => {
+      this.emit('reconnectAttempt', attempt);
+    });
+    
+    this.socket.io.on('reconnect_failed', () => {
+      this.emit('reconnectFailed');
     });
 
     this.socket.on(SocketEvents.PLAYER_LIST, (players: Player[]) => {
@@ -108,8 +130,31 @@ export class SocketClient {
     this.eventHandlers.get(event)?.delete(handler);
   }
 
-  join(username: string, startPosition?: { x: number; y: number }): void {
+  join(username: string, startPosition?: Position): void {
+    // Cache username for reconnection
+    this.cachedUsername = username;
     this.socket.emit(SocketEvents.JOIN, { username, startPosition });
+  }
+  
+  rejoin(): void {
+    if (!this.cachedUsername) return;
+    
+    // Get current position from provider, or undefined to let server assign
+    const currentPosition = this.positionProvider?.();
+    this.socket.emit(SocketEvents.JOIN, { 
+      username: this.cachedUsername, 
+      startPosition: currentPosition 
+    });
+  }
+  
+  setPositionProvider(provider: () => Position | undefined): void {
+    this.positionProvider = provider;
+  }
+  
+  manualReconnect(): void {
+    if (!this.socket.connected) {
+      this.socket.connect();
+    }
   }
 
   requestPaintCell(request: PaintCellRequest): void {

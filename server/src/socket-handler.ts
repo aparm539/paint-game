@@ -28,11 +28,13 @@ export class GameRoom {
   private io: Server;
   private grid: GridCell[][] = [];
   private colors: string[] = [];
-  private colorNumberMap: Map<number, string> = new Map();
+  private colorNumberMap: Record<number, string> = {};
   private paintedCellsCount: number = 0; // Running counter for performance
+  private currentGridSize: number; // Dynamic grid size that grows on completion
 
   constructor(io: Server) {
     this.io = io;
+    this.currentGridSize = GAME_CONFIG.INITIAL_GRID_SIZE; // Start at 2x2
     this.initializeGrid();
   }
 
@@ -41,20 +43,21 @@ export class GameRoom {
     this.colors = GAME_CONFIG.PAINT_COLORS.slice(0, NUM_COLORS);
     
     // Create color number mapping (1-6 map to colors)
+    this.colorNumberMap = {};
     for (let i = 0; i < NUM_COLORS; i++) {
-      this.colorNumberMap.set(i + 1, this.colors[i]);
+      this.colorNumberMap[i + 1] = this.colors[i];
     }
     
     this.paintedCellsCount = 0;
 
-    // Generate grid with random color assignments
+    // Generate grid with random color assignments using current dynamic size
     this.grid = [];
-    for (let y = 0; y < GRID_SIZE; y++) {
+    for (let y = 0; y < this.currentGridSize; y++) {
       const row: GridCell[] = [];
-      for (let x = 0; x < GRID_SIZE; x++) {
+      for (let x = 0; x < this.currentGridSize; x++) {
         // Randomly assign a color number (1 to NUM_COLORS)
         const colorNumber = Math.floor(Math.random() * NUM_COLORS) + 1;
-        const targetColor = this.colorNumberMap.get(colorNumber)!;
+        const targetColor = this.colorNumberMap[colorNumber] || this.colors[0];
         
         row.push({
           x,
@@ -68,7 +71,7 @@ export class GameRoom {
       this.grid.push(row);
     }
 
-    console.log(`Grid initialized: ${GRID_SIZE}x${GRID_SIZE} with ${NUM_COLORS} colors`);
+    console.log(`Grid initialized: ${this.currentGridSize}x${this.currentGridSize} with ${NUM_COLORS} colors`);
   }
 
   addPlayer(socketId: string, username: string, startPosition: Position): Player {
@@ -130,7 +133,7 @@ export class GameRoom {
 
   // Calculate game progress using running counter
   private calculateProgress(): GameProgress {
-    const totalCells = GRID_SIZE * GRID_SIZE;
+    const totalCells = this.currentGridSize * this.currentGridSize;
     return {
       totalCells,
       paintedCells: this.paintedCellsCount,
@@ -149,7 +152,7 @@ export class GameRoom {
     }
 
     // Check if position is on grid
-    const gridCoords = worldToGrid(request.position, GRID_SIZE, CELL_PIXEL_SIZE);
+    const gridCoords = worldToGrid(request.position, this.currentGridSize, CELL_PIXEL_SIZE);
     
     if (gridCoords) {
       const cell = this.grid[gridCoords.y][gridCoords.x];
@@ -202,6 +205,9 @@ export class GameRoom {
             message: 'Painting Complete!',
             progress,
           });
+          
+          // Grow the grid and start a new round
+          this.growGrid();
         }
       }
     }
@@ -212,21 +218,37 @@ export class GameRoom {
   }
 
   getGameState(): GameState {
-    // Convert Map to Record for serialization
-    const colorNumberMap: Record<number, string> = {};
-    this.colorNumberMap.forEach((color, number) => {
-      colorNumberMap[number] = color;
-    });
-
     return {
       players: this.getAllPlayers(),
       grid: this.grid,
-      gridSize: GRID_SIZE,
+      gridSize: this.currentGridSize,
       cellPixelSize: CELL_PIXEL_SIZE,
       colors: this.colors,
-      colorNumberMap,
+      colorNumberMap: this.colorNumberMap,
       progress: this.calculateProgress(),
     };
+  }
+
+  // Grow the grid after completion: +1 until size 10, then 5% growth
+  private growGrid(): void {
+    const oldSize = this.currentGridSize;
+    
+    if (this.currentGridSize < 10) {
+      // Linear growth: +1 for small grids
+      this.currentGridSize += 1;
+    } else {
+      // 5% growth for larger grids, rounded up to ensure at least +1
+      this.currentGridSize = Math.ceil(this.currentGridSize * 1.05);
+    }
+    
+    console.log(`Grid growing from ${oldSize}x${oldSize} to ${this.currentGridSize}x${this.currentGridSize}`);
+    
+    // Reinitialize the grid with the new size
+    this.initializeGrid();
+    
+    // Broadcast the new game state to all players
+    // Players stay where they are - no repositioning
+    this.io.emit(SocketEvents.GAME_STATE, this.getGameState());
   }
 }
 

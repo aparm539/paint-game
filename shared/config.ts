@@ -2,7 +2,8 @@
 
 export const GAME_CONFIG = {
   // Grid settings
-  GRID_SIZE: 20,
+  INITIAL_GRID_SIZE: 2,  // Grid starts at 2x2
+  GRID_SIZE: 20,         // Default/fallback grid size
   CELL_PIXEL_SIZE: 50,
   NUM_COLORS: 6,
   
@@ -34,6 +35,11 @@ export const GAME_CONFIG = {
   CAMERA_SMOOTHING: 0.15,
   PLAYER_INTERPOLATION_SMOOTHING: 0.3,
   SNAP_DISTANCE_SQUARED: 0.25,
+  
+  // Reconnection
+  RECONNECTION_ATTEMPTS: 5,
+  RECONNECTION_DELAY: 1000, // ms
+  RECONNECTION_DELAY_MAX: 5000, // ms
 } as const;
 
 // Computed values
