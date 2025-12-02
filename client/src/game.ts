@@ -1,6 +1,6 @@
 import type { Player, PaintEvent, GameProgress, Position, GridCell, PaintSupplyUpdate } from '../../shared/types.js';
 import { GAME_CONFIG } from '../../shared/config.js';
-import { worldToGrid, hexToRgb } from '../../shared/utils.js';
+import { worldToGrid } from '../../shared/utils.js';
 import { SocketClient } from './socket-client.js';
 
 export class Game {
@@ -35,18 +35,12 @@ export class Game {
   private lastMoveEmit: number = 0;
   private moveEmitThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE;
   
-  // Paint trail system
+  // Painting state
   private isPainting: boolean = false;
-  private paintTrail: Array<{
-    position: Position;
-    timestamp: number;
-    color: string;
-    processed: boolean;
-  }> = [];
-  private lastTrailPoint: number = 0;
-  private trailPointInterval: number = GAME_CONFIG.TRAIL_POINT_INTERVAL;
-  private trailLifetime: number = GAME_CONFIG.TRAIL_LIFETIME;
   private paintedCells: Set<string> = new Set();
+  private pendingPaintCells: Set<string> = new Set(); // Cells waiting for server confirmation
+  private lastPaintTime: number = 0;
+  private paintThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE; // Reuse throttle timing
   
   // Connection state
   private isDisconnected: boolean = false;
@@ -193,17 +187,11 @@ export class Game {
         this.updatePaintingStatusUI();
       }
 
-      // Add trail point if painting
+      // Paint cell immediately if painting
       const now = Date.now();
-      if (this.isPainting && currentPlayer.paintSupply > 0 && now - this.lastTrailPoint > this.trailPointInterval) {
-        const selectedColor = this.colorNumberMap[this.selectedColorNumber] || this.colors[0];
-        this.paintTrail.push({
-          position: { ...currentPlayer.position },
-          timestamp: now,
-          color: selectedColor,
-          processed: false,
-        });
-        this.lastTrailPoint = now;
+      if (this.isPainting && currentPlayer.paintSupply > 0 && now - this.lastPaintTime > this.paintThrottle) {
+        this.tryPaintCurrentCell(currentPlayer.position);
+        this.lastPaintTime = now;
       }
 
       // Emit to server (throttled)
@@ -213,6 +201,25 @@ export class Game {
           position: currentPlayer.position,
         });
         this.lastMoveEmit = now;
+      }
+    }
+  }
+
+  private tryPaintCurrentCell(position: Position): void {
+    const gridCoords = worldToGrid(position, this.gridSize, this.cellPixelSize);
+    if (gridCoords) {
+      const cellKey = `${gridCoords.x},${gridCoords.y}`;
+      
+      // Only paint if not already painted or pending
+      if (!this.paintedCells.has(cellKey) && !this.pendingPaintCells.has(cellKey)) {
+        this.pendingPaintCells.add(cellKey);
+        
+        // Request paint from server
+        this.socketClient.requestPaintCell({
+          playerId: this.currentPlayerId,
+          position: position,
+          colorNumber: this.selectedColorNumber,
+        });
       }
     }
   }
@@ -297,6 +304,9 @@ export class Game {
       // Clear painted cells cache if grid size changed (new round)
       if (state.gridSize !== this.gridSize) {
         this.paintedCells.clear();
+        this.pendingPaintCells.clear();
+        this.isPainting = false; // Stop painting on new round
+        this.updatePaintingStatusUI();
         console.log(`Grid size changed from ${this.gridSize} to ${state.gridSize} - cleared paint cache`);
       }
       
@@ -363,13 +373,21 @@ export class Game {
   }
 
   private handlePaintCell(paint: PaintEvent): void {
+    const cellKey = `${paint.cellX},${paint.cellY}`;
+    
+    // Remove from pending set
+    this.pendingPaintCells.delete(cellKey);
+    
     // Update grid cell if we have it
     if (this.grid[paint.cellY] && this.grid[paint.cellY][paint.cellX]) {
       const cell = this.grid[paint.cellY][paint.cellX];
       if (paint.success) {
         cell.painted = true;
         cell.currentColor = paint.color;
+        // Mark as successfully painted so we don't try again
+        this.paintedCells.add(cellKey);
       }
+      // If paint failed, pendingPaintCells is already cleared so player can retry
     }
   }
 
@@ -561,12 +579,6 @@ export class Game {
 
     // Draw painting grid
     this.drawPaintingGrid();
-
-    // Draw paint trail
-    this.drawPaintTrail();
-    
-    // Process trail for cell painting
-    this.processTrailPainting();
   }
 
   private drawPaintingGrid(): void {
@@ -617,74 +629,6 @@ export class Game {
         }
       }
     }
-  }
-
-  private drawPaintTrail(): void {
-    const now = Date.now();
-    
-    // Remove old trail segments
-    this.paintTrail = this.paintTrail.filter(segment => {
-      return now - segment.timestamp < this.trailLifetime;
-    });
-    
-    if (this.paintTrail.length < 2) return;
-    
-    // Draw trail as connected line segments with fade
-    for (let i = 1; i < this.paintTrail.length; i++) {
-      const segment = this.paintTrail[i];
-      const prevSegment = this.paintTrail[i - 1];
-      
-      const age = now - segment.timestamp;
-      const opacity = Math.max(0, 1 - age / this.trailLifetime);
-      
-      const rgb = hexToRgb(segment.color);
-      
-      // Convert to screen coordinates
-      const screenPos = this.worldToScreen(segment.position);
-      const prevScreenPos = this.worldToScreen(prevSegment.position);
-      
-      // Draw line segment with width slightly smaller than cell size
-      this.ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${opacity * 0.7})`;
-      this.ctx.lineWidth = this.cellPixelSize * 0.85; // Slightly smaller than grid cell size
-      this.ctx.lineCap = 'round';
-      this.ctx.lineJoin = 'round';
-      this.ctx.beginPath();
-      this.ctx.moveTo(prevScreenPos.x, prevScreenPos.y);
-      this.ctx.lineTo(screenPos.x, screenPos.y);
-      this.ctx.stroke();
-    }
-  }
-
-  private processTrailPainting(): void {
-    const now = Date.now();
-    
-    this.paintTrail.forEach(segment => {
-      const age = now - segment.timestamp;
-      
-      // Process segment if it's old enough and not yet processed
-      if (!segment.processed && age >= GAME_CONFIG.PAINT_DELAY) {
-        segment.processed = true;
-        
-        // Convert world position to grid coordinates
-        const gridCoords = worldToGrid(segment.position, this.gridSize, this.cellPixelSize);
-        if (gridCoords) {
-          const cellKey = `${gridCoords.x},${gridCoords.y}`;
-          
-          // Only paint if not already painted in this session
-          if (!this.paintedCells.has(cellKey)) {
-            this.paintedCells.add(cellKey);
-            
-            // Request paint from server
-            this.socketClient.requestPaintCell({
-              playerId: this.currentPlayerId,
-              position: segment.position,
-              color: segment.color,
-              colorNumber: this.selectedColorNumber,
-            });
-          }
-        }
-      }
-    });
   }
 
   private drawRechargeZone(): void {
@@ -766,7 +710,6 @@ export class Game {
     // Stop painting and clear input state
     this.isPainting = false;
     this.keysPressed.clear();
-    this.paintTrail = [];
     
     this.showConnectionOverlay('Connection lost - Reconnecting...');
   }
@@ -790,6 +733,7 @@ export class Game {
     
     // Clear painted cells tracking for fresh sync
     this.paintedCells.clear();
+    this.pendingPaintCells.clear();
     
     // Rejoin to get fresh game state
     this.socketClient.rejoin();

@@ -11,11 +11,7 @@ import {
   type PlayerMove,
   type PaintSupplyUpdate,
 } from '../../shared/types.js';
-import {
-  GAME_CONFIG,
-  RECHARGE_ZONE_CENTER_X,
-  RECHARGE_ZONE_CENTER_Y,
-} from '../../shared/config.js';
+import { GAME_CONFIG } from '../../shared/config.js';
 import { worldToGrid, isInCircularZone, clamp } from '../../shared/utils.js';
 
 // Use env vars with fallback to config defaults
@@ -57,13 +53,11 @@ export class GameRoom {
       for (let x = 0; x < this.currentGridSize; x++) {
         // Randomly assign a color number (1 to NUM_COLORS)
         const colorNumber = Math.floor(Math.random() * NUM_COLORS) + 1;
-        const targetColor = this.colorNumberMap[colorNumber] || this.colors[0];
         
         row.push({
           x,
           y,
           number: colorNumber,
-          targetColor,
           currentColor: null,
           painted: false,
         });
@@ -106,11 +100,17 @@ export class GameRoom {
     if (player) {
       player.position = position;
       
+      // Calculate recharge zone position dynamically based on current grid size
+      const gridPixelSize = this.currentGridSize * CELL_PIXEL_SIZE;
+      const gridHalfSize = gridPixelSize / 2;
+      const rechargeZoneCenterX = gridHalfSize + GAME_CONFIG.RECHARGE_ZONE_OFFSET_X;
+      const rechargeZoneCenterY = 0;
+      
       // Check if player is in recharge zone and refill paint
       const inRechargeZone = isInCircularZone(
         position,
-        RECHARGE_ZONE_CENTER_X,
-        RECHARGE_ZONE_CENTER_Y,
+        rechargeZoneCenterX,
+        rechargeZoneCenterY,
         GAME_CONFIG.RECHARGE_ZONE_RADIUS
       );
       
@@ -141,75 +141,74 @@ export class GameRoom {
     };
   }
 
+  // Convert world position to grid coordinates using shared utility
+  private getGridCoords(position: Position): { x: number; y: number } | null {
+    return worldToGrid(position, this.currentGridSize, CELL_PIXEL_SIZE);
+  }
+
   // Process paint cell request from player trail
   processPaintCell(request: PaintCellRequest, socketId: string): void {
     const player = this.getPlayer(socketId);
     if (!player) return;
 
     // Check if player has enough paint supply
-    if (player.paintSupply < GAME_CONFIG.PAINT_COST_PER_CELL) {
-      return;
-    }
+    if (player.paintSupply < GAME_CONFIG.PAINT_COST_PER_CELL) return;
 
-    // Check if position is on grid
-    const gridCoords = worldToGrid(request.position, this.currentGridSize, CELL_PIXEL_SIZE);
-    
-    if (gridCoords) {
-      const cell = this.grid[gridCoords.y][gridCoords.x];
-      
-      // Check if the color matches and cell isn't already painted
-      const success = !cell.painted && cell.number === request.colorNumber;
-      
-      if (success) {
-        // Deduct paint supply
-        player.paintSupply = Math.max(0, player.paintSupply - GAME_CONFIG.PAINT_COST_PER_CELL);
-        
-        // Broadcast paint supply update
-        const supplyUpdate: PaintSupplyUpdate = {
-          playerId: player.id,
-          paintSupply: player.paintSupply,
-        };
-        this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, supplyUpdate);
-        
-        // Paint the cell and increment counter
-        cell.currentColor = request.color;
-        cell.painted = true;
-        this.paintedCellsCount++;
-      }
-      
-      // Create paint event
-      const paintEvent: PaintEvent = {
-        playerId: socketId,
-        username: player.username,
-        cellX: gridCoords.x,
-        cellY: gridCoords.y,
-        color: request.color,
-        colorNumber: request.colorNumber,
-        success,
-      };
-      
-      // Broadcast paint event
-      this.io.emit(SocketEvents.PAINT_CELL, paintEvent);
-      
-      if (success) {
-        // Broadcast grid update
-        this.io.emit(SocketEvents.GRID_UPDATE, this.grid);
-        
-        // Calculate and broadcast progress
-        const progress = this.calculateProgress();
-        this.io.emit(SocketEvents.GAME_PROGRESS, progress);
-        
-        // Check if game is complete
-        if (progress.percentageComplete === 100) {
-          this.io.emit(SocketEvents.GAME_COMPLETE, {
-            message: 'Painting Complete!',
-            progress,
-          });
-          
-          // Grow the grid and start a new round
-          this.growGrid();
-        }
-      }
+    // Get grid coordinates from player position
+    const gridCoords = this.getGridCoords(request.position);
+    if (!gridCoords) return;
+
+    const cell = this.grid[gridCoords.y]?.[gridCoords.x];
+    if (!cell) return;
+
+    // Check if cell can be painted with the selected color
+    if (cell.painted) return;
+    if (cell.number !== request.colorNumber) return;
+
+    // Success: deduct paint supply
+    player.paintSupply = Math.max(0, player.paintSupply - GAME_CONFIG.PAINT_COST_PER_CELL);
+
+    // Broadcast paint supply update
+    const supplyUpdate: PaintSupplyUpdate = {
+      playerId: player.id,
+      paintSupply: player.paintSupply,
+    };
+    this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, supplyUpdate);
+
+    // Paint the cell and increment counter
+    const paintColor = this.colorNumberMap[request.colorNumber] || this.colors[0];
+    cell.currentColor = paintColor;
+    cell.painted = true;
+    this.paintedCellsCount++;
+
+    // Create and broadcast paint event
+    const paintEvent: PaintEvent = {
+      playerId: socketId,
+      username: player.username,
+      cellX: gridCoords.x,
+      cellY: gridCoords.y,
+      color: paintColor,
+      colorNumber: request.colorNumber,
+      success: true,
+    };
+    this.io.emit(SocketEvents.PAINT_CELL, paintEvent);
+
+    // Broadcast grid update
+    this.io.emit(SocketEvents.GRID_UPDATE, this.grid);
+
+    // Calculate and broadcast progress
+    const progress = this.calculateProgress();
+    this.io.emit(SocketEvents.GAME_PROGRESS, progress);
+
+    // Check if game is complete
+    if (progress.percentageComplete === 100) {
+      this.io.emit(SocketEvents.GAME_COMPLETE, {
+        message: 'Painting Complete!',
+        progress,
+      });
+
+      // Grow the grid and start a new round
+      this.growGrid();
     }
   }
 

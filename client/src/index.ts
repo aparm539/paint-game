@@ -57,10 +57,22 @@ function initializeGame(username: string): void {
 
   // Initialize game BEFORE joining so handlers are ready
   game = new Game(canvas, socketClient);
-  
-  // Set current player ID
-  const playerId = socketClient.getSocketId();
-  game.setCurrentPlayer(playerId);
+
+  // Ensure current player ID is set when socket connects (handles race where socket.id may be empty)
+  const setCurrentId = () => {
+    const playerId = socketClient.getSocketId();
+    if (game && playerId) {
+      game.setCurrentPlayer(playerId);
+    }
+  };
+
+  // Update when the socket connects (or reconnects)
+  socketClient.on('connect', () => {
+    setCurrentId();
+  });
+
+  // Try immediately in case we're already connected
+  setCurrentId();
 
   // Get random starting position (top-down view)
   const startPosition = {

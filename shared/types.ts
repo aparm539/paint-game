@@ -18,7 +18,6 @@ export interface GridCell {
   x: number; // Grid x coordinate
   y: number; // Grid y coordinate
   number: number; // The number shown on this cell (1-N)
-  targetColor: string; // The color this cell should be painted
   currentColor: string | null; // Current painted color (null if unpainted)
   painted: boolean; // Whether this cell is correctly painted
 }
@@ -26,7 +25,6 @@ export interface GridCell {
 export interface PaintCellRequest {
   playerId: string;
   position: Position;
-  color: string;
   colorNumber: number;
 }
 

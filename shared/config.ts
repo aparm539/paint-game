@@ -26,11 +26,6 @@ export const GAME_CONFIG = {
   MOVEMENT_SPEED: 3,
   MOVE_EMIT_THROTTLE: 50, // ms
   
-  // Paint trail
-  TRAIL_POINT_INTERVAL: 50, // ms
-  TRAIL_LIFETIME: 1000, // ms
-  PAINT_DELAY: 500, // ms before trail segment paints cell
-  
   // Interpolation
   CAMERA_SMOOTHING: 0.15,
   PLAYER_INTERPOLATION_SMOOTHING: 0.3,
