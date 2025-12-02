@@ -26,47 +26,51 @@ joinButton.addEventListener('click', () => {
     alert('Please enter a username');
     return;
   }
+  
+  // Limit username length (matches server validation)
+  const sanitizedUsername = username.slice(0, 20);
 
-  // Wait for connection first
-  const checkConnection = setInterval(() => {
-    if (socketClient.isConnected()) {
-      clearInterval(checkConnection);
-      
-      console.log('Connected to server, socket ID:', socketClient.getSocketId());
-      
-      // Hide username screen, show game screen
-      usernameScreen.classList.add('hidden');
-      gameScreen.classList.remove('hidden');
-
-      // Initialize game BEFORE joining so handlers are ready
-      game = new Game(canvas, socketClient);
-      
-      // Set current player ID
-      const playerId = socketClient.getSocketId();
-      console.log('Setting current player ID:', playerId);
-      game.setCurrentPlayer(playerId);
-
-      // Get random starting position (top-down view)
-      const startPosition = {
-        x: Math.random() * 400 - 200,
-        y: Math.random() * 400 - 200,
-      };
-
-      console.log('Joining game with username:', username, 'at position:', startPosition);
-      
-      // Now join game - handlers are ready to receive GAME_STATE
-      socketClient.join(username, startPosition);
-    }
-  }, 100);
-
-  // Timeout after 5 seconds
-  setTimeout(() => {
-    clearInterval(checkConnection);
-    if (!socketClient.isConnected()) {
-      alert('Failed to connect to server. Please refresh and try again.');
-    }
-  }, 5000);
+  // Use connection event instead of polling
+  if (socketClient.isConnected()) {
+    initializeGame(sanitizedUsername);
+  } else {
+    // Wait for connection
+    const unsubscribe = socketClient.on('connect', () => {
+      unsubscribe();
+      initializeGame(sanitizedUsername);
+    });
+    
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      if (!socketClient.isConnected()) {
+        unsubscribe();
+        alert('Failed to connect to server. Please refresh and try again.');
+      }
+    }, 5000);
+  }
 });
+
+function initializeGame(username: string): void {
+  // Hide username screen, show game screen
+  usernameScreen!.classList.add('hidden');
+  gameScreen!.classList.remove('hidden');
+
+  // Initialize game BEFORE joining so handlers are ready
+  game = new Game(canvas, socketClient);
+  
+  // Set current player ID
+  const playerId = socketClient.getSocketId();
+  game.setCurrentPlayer(playerId);
+
+  // Get random starting position (top-down view)
+  const startPosition = {
+    x: Math.random() * 400 - 200,
+    y: Math.random() * 400 - 200,
+  };
+  
+  // Now join game - handlers are ready to receive GAME_STATE
+  socketClient.join(username, startPosition);
+}
 
 // Handle Enter key in username input
 usernameInput.addEventListener('keypress', (e) => {

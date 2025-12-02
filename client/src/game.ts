@@ -1,4 +1,6 @@
 import type { Player, PaintEvent, GameProgress, Position, GridCell, PaintSupplyUpdate } from '../../shared/types.js';
+import { GAME_CONFIG } from '../../shared/config.js';
+import { worldToGrid, hexToRgb } from '../../shared/utils.js';
 import { SocketClient } from './socket-client.js';
 
 export class Game {
@@ -29,9 +31,9 @@ export class Game {
   
   // Movement
   private keysPressed: Set<string> = new Set();
-  private movementSpeed: number = 3;
+  private movementSpeed: number = GAME_CONFIG.MOVEMENT_SPEED;
   private lastMoveEmit: number = 0;
-  private moveEmitThrottle: number = 50; // ms
+  private moveEmitThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE;
   
   // Paint trail system
   private isPainting: boolean = false;
@@ -42,9 +44,9 @@ export class Game {
     processed: boolean;
   }> = [];
   private lastTrailPoint: number = 0;
-  private trailPointInterval: number = 50; // Add trail point every 50ms
-  private trailLifetime: number = 1000; // Trail fades out after 1 second
-  private paintedCells: Set<string> = new Set(); // Track already painted cells to avoid duplicates
+  private trailPointInterval: number = GAME_CONFIG.TRAIL_POINT_INTERVAL;
+  private trailLifetime: number = GAME_CONFIG.TRAIL_LIFETIME;
+  private paintedCells: Set<string> = new Set();
 
   constructor(canvas: HTMLCanvasElement, socketClient: SocketClient) {
     this.canvas = canvas;
@@ -86,7 +88,7 @@ export class Game {
     };
     
     // Smooth camera follow with lerp (linear interpolation)
-    const smoothing = 0.15; // Lower = smoother but slower, Higher = snappier
+    const smoothing = GAME_CONFIG.CAMERA_SMOOTHING;
     this.cameraOffset = {
       x: this.cameraOffset.x + (targetOffset.x - this.cameraOffset.x) * smoothing,
       y: this.cameraOffset.y + (targetOffset.y - this.cameraOffset.y) * smoothing,
@@ -128,9 +130,6 @@ export class Game {
         if (currentPlayer && currentPlayer.paintSupply > 0) {
           this.isPainting = true;
           this.updatePaintingStatusUI();
-          console.log('Painting enabled');
-        } else {
-          console.log('Cannot paint - no paint supply!');
         }
       }
     }
@@ -151,7 +150,6 @@ export class Game {
     if (key === ' ' || e.code === 'Space') {
       this.isPainting = false;
       this.updatePaintingStatusUI();
-      console.log('Painting disabled');
     }
   }
 
@@ -184,7 +182,6 @@ export class Game {
       if (this.isPainting && currentPlayer.paintSupply <= 0) {
         this.isPainting = false;
         this.updatePaintingStatusUI();
-        console.log('Out of paint!');
       }
 
       // Add trail point if painting
@@ -212,12 +209,12 @@ export class Game {
   }
 
   private setupSocketHandlers(): void {
-    this.socketClient.onPlayerList((players) => {
+    this.socketClient.on('playerList', (players) => {
       this.updatePlayers(players);
       this.updatePlayerListUI();
     });
 
-    this.socketClient.onPlayerJoined((player) => {
+    this.socketClient.on('playerJoined', (player) => {
       // Initialize target position for new players
       if (player.id !== this.currentPlayerId) {
         player.targetPosition = { ...player.position };
@@ -227,7 +224,7 @@ export class Game {
       this.updatePlayerListUI();
     });
 
-    this.socketClient.onPlayerLeft((data) => {
+    this.socketClient.on('playerLeft', (data) => {
       // Cancel any active animation for this player
       const animation = this.activeAnimations.get(data.playerId);
       if (animation) {
@@ -239,7 +236,7 @@ export class Game {
       this.updatePlayerListUI();
     });
 
-    this.socketClient.onPlayerMove((move) => {
+    this.socketClient.on('playerMove', (move) => {
       // Update other players' positions with interpolation
       const player = this.players.get(move.playerId);
       if (player && move.playerId !== this.currentPlayerId) {
@@ -248,16 +245,16 @@ export class Game {
       }
     });
 
-    this.socketClient.onPaintCell((paint) => {
+    this.socketClient.on('paintCell', (paint) => {
       this.handlePaintCell(paint);
     });
 
-    this.socketClient.onGameProgress((progress) => {
+    this.socketClient.on('gameProgress', (progress) => {
       this.progress = progress;
       this.updateProgressUI();
     });
 
-    this.socketClient.onGameComplete((data) => {
+    this.socketClient.on('gameComplete', (data) => {
       const statusEl = document.getElementById('game-status');
       if (statusEl) {
         statusEl.textContent = data.message;
@@ -265,12 +262,11 @@ export class Game {
       }
     });
 
-    this.socketClient.onGridUpdate((grid) => {
+    this.socketClient.on('gridUpdate', (grid) => {
       this.grid = grid;
     });
 
-    this.socketClient.onGameState((state) => {
-      console.log('Received game state:', state);
+    this.socketClient.on('gameState', (state) => {
       
       // Update all game state data
       this.grid = state.grid;
@@ -321,11 +317,9 @@ export class Game {
       this.updateProgressUI();
       this.updatePaintSupplyUI();
       this.createColorPaletteUI();
-      
-      console.log(`Game state loaded: ${state.players.length} players, grid ${this.gridSize}x${this.gridSize}, ${this.progress.paintedCells} cells painted`);
     });
 
-    this.socketClient.onPaintSupplyUpdate((update) => {
+    this.socketClient.on('paintSupplyUpdate', (update) => {
       const player = this.players.get(update.playerId);
       if (player) {
         player.paintSupply = update.paintSupply;
@@ -337,8 +331,6 @@ export class Game {
   }
 
   private handlePaintCell(paint: PaintEvent): void {
-    console.log('Paint cell:', paint);
-    
     // Update grid cell if we have it
     if (this.grid[paint.cellY] && this.grid[paint.cellY][paint.cellX]) {
       const cell = this.grid[paint.cellY][paint.cellX];
@@ -510,15 +502,15 @@ export class Game {
       // Interpolate other players' positions for smooth movement
       if (player.id !== this.currentPlayerId && player.targetPosition) {
         // Smooth interpolation (lerp) towards target position
-        const smoothing = 0.3; // Higher = snappier, lower = smoother
+        const smoothing = GAME_CONFIG.PLAYER_INTERPOLATION_SMOOTHING;
         player.position.x += (player.targetPosition.x - player.position.x) * smoothing;
         player.position.y += (player.targetPosition.y - player.position.y) * smoothing;
         
-        // Snap to target if very close (within 0.5 pixels)
+        // Snap to target if very close
         const dx = player.targetPosition.x - player.position.x;
         const dy = player.targetPosition.y - player.position.y;
         const distanceSquared = dx * dx + dy * dy;
-        if (distanceSquared < 0.25) {
+        if (distanceSquared < GAME_CONFIG.SNAP_DISTANCE_SQUARED) {
           player.position = { ...player.targetPosition };
         }
       }
@@ -543,9 +535,6 @@ export class Game {
     
     // Process trail for cell painting
     this.processTrailPainting();
-    
-    // Draw position debug info
-    this.drawDebugInfo();
   }
 
   private drawPaintingGrid(): void {
@@ -616,16 +605,6 @@ export class Game {
       const age = now - segment.timestamp;
       const opacity = Math.max(0, 1 - age / this.trailLifetime);
       
-      // Parse color
-      const hexToRgb = (hex: string) => {
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? {
-          r: parseInt(result[1], 16),
-          g: parseInt(result[2], 16),
-          b: parseInt(result[3], 16)
-        } : { r: 255, g: 0, b: 0 };
-      };
-      
       const rgb = hexToRgb(segment.color);
       
       // Convert to screen coordinates
@@ -646,17 +625,16 @@ export class Game {
 
   private processTrailPainting(): void {
     const now = Date.now();
-    const paintDelay = 500; // Paint cells after 500ms
     
     this.paintTrail.forEach(segment => {
       const age = now - segment.timestamp;
       
       // Process segment if it's old enough and not yet processed
-      if (!segment.processed && age >= paintDelay) {
+      if (!segment.processed && age >= GAME_CONFIG.PAINT_DELAY) {
         segment.processed = true;
         
         // Convert world position to grid coordinates
-        const gridCoords = this.worldToGrid(segment.position);
+        const gridCoords = worldToGrid(segment.position, this.gridSize, this.cellPixelSize);
         if (gridCoords) {
           const cellKey = `${gridCoords.x},${gridCoords.y}`;
           
@@ -675,29 +653,6 @@ export class Game {
         }
       }
     });
-  }
-
-  private worldToGrid(position: Position): { x: number; y: number } | null {
-    // Grid is centered at origin (0, 0)
-    const gridPixelSize = this.gridSize * this.cellPixelSize;
-    const halfGrid = gridPixelSize / 2;
-    
-    // Convert world coordinates to grid coordinates
-    const gridX = Math.floor((position.x + halfGrid) / this.cellPixelSize);
-    const gridY = Math.floor((position.y + halfGrid) / this.cellPixelSize);
-    
-    // Check if within bounds
-    if (gridX >= 0 && gridX < this.gridSize && gridY >= 0 && gridY < this.gridSize) {
-      return { x: gridX, y: gridY };
-    }
-    
-    return null;
-  }
-
-  private drawDebugInfo(): void {
-    const currentPlayer = this.players.get(this.currentPlayerId);
-    if (!currentPlayer) return;
-
   }
 
   private drawRechargeZone(): void {

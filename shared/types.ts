@@ -23,14 +23,6 @@ export interface GridCell {
   painted: boolean; // Whether this cell is correctly painted
 }
 
-export interface PaintGrid {
-  cells: GridCell[][];
-  gridSize: number; // Number of cells per side
-  cellPixelSize: number; // Size of each cell in pixels
-  colors: string[]; // Available colors in the painting
-  colorMap: Map<number, string>; // Maps number to target color
-}
-
 export interface PaintCellRequest {
   playerId: string;
   position: Position;

@@ -11,20 +11,17 @@ import {
   type PlayerMove,
   type PaintSupplyUpdate,
 } from '../../shared/types.js';
+import {
+  GAME_CONFIG,
+  RECHARGE_ZONE_CENTER_X,
+  RECHARGE_ZONE_CENTER_Y,
+} from '../../shared/config.js';
+import { worldToGrid, isInCircularZone, clamp } from '../../shared/utils.js';
 
-const GRID_SIZE = parseInt(process.env.GRID_SIZE || '20'); // Grid size from env
-const CELL_PIXEL_SIZE = parseInt(process.env.CELL_PIXEL_SIZE || '50'); // Cell size from env
-const PAINT_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E2'];
-const NUM_COLORS = parseInt(process.env.NUM_COLORS || '6'); // Number of colors from env
-const GRID_PIXEL_SIZE = GRID_SIZE * CELL_PIXEL_SIZE; // Total grid size in pixels (e.g., 1000px)
-const GRID_HALF_SIZE = GRID_PIXEL_SIZE / 2; // Half of grid (e.g., 500px)
-// Recharge zone positioned to the right of the grid
-const RECHARGE_ZONE_CENTER_X = GRID_HALF_SIZE + 200; // 200px to the right of grid edge
-const RECHARGE_ZONE_CENTER_Y = 0; // Centered vertically with grid
-const RECHARGE_ZONE_RADIUS = 120; // 120px radius circle
-const MAX_PAINT_SUPPLY = 100;
-const PAINT_COST_PER_CELL = 5; // Paint supply cost per cell painted
-const RECHARGE_RATE = 2; // Paint supply recharged per movement update when in zone
+// Use env vars with fallback to config defaults
+const GRID_SIZE = parseInt(process.env.GRID_SIZE || String(GAME_CONFIG.GRID_SIZE));
+const CELL_PIXEL_SIZE = parseInt(process.env.CELL_PIXEL_SIZE || String(GAME_CONFIG.CELL_PIXEL_SIZE));
+const NUM_COLORS = parseInt(process.env.NUM_COLORS || String(GAME_CONFIG.NUM_COLORS));
 
 export class GameRoom {
   private players: Map<string, Player> = new Map();
@@ -32,6 +29,7 @@ export class GameRoom {
   private grid: GridCell[][] = [];
   private colors: string[] = [];
   private colorNumberMap: Map<number, string> = new Map();
+  private paintedCellsCount: number = 0; // Running counter for performance
 
   constructor(io: Server) {
     this.io = io;
@@ -40,12 +38,14 @@ export class GameRoom {
 
   private initializeGrid(): void {
     // Select colors for this game
-    this.colors = PAINT_COLORS.slice(0, NUM_COLORS);
+    this.colors = GAME_CONFIG.PAINT_COLORS.slice(0, NUM_COLORS);
     
     // Create color number mapping (1-6 map to colors)
     for (let i = 0; i < NUM_COLORS; i++) {
       this.colorNumberMap.set(i + 1, this.colors[i]);
     }
+    
+    this.paintedCellsCount = 0;
 
     // Generate grid with random color assignments
     this.grid = [];
@@ -73,15 +73,14 @@ export class GameRoom {
 
   addPlayer(socketId: string, username: string, startPosition: Position): Player {
     // Assign a random avatar color (different from paint colors)
-    const avatarColors = ['#FF1493', '#00CED1', '#FFD700', '#9370DB', '#FF4500', '#32CD32'];
-    const avatarColor = avatarColors[this.players.size % avatarColors.length];
+    const avatarColor = GAME_CONFIG.AVATAR_COLORS[this.players.size % GAME_CONFIG.AVATAR_COLORS.length];
     
     const player: Player = {
       id: socketId,
       username,
       position: startPosition,
       color: avatarColor,
-      paintSupply: MAX_PAINT_SUPPLY, // Start with full paint
+      paintSupply: GAME_CONFIG.MAX_PAINT_SUPPLY,
     };
     this.players.set(socketId, player);
     return player;
@@ -104,14 +103,20 @@ export class GameRoom {
     if (player) {
       player.position = position;
       
-      // Check if player is in recharge zone (circular area to the right of grid) and refill paint
-      const dx = position.x - RECHARGE_ZONE_CENTER_X;
-      const dy = position.y - RECHARGE_ZONE_CENTER_Y;
-      const distanceFromRechargeCenter = Math.sqrt(dx * dx + dy * dy);
-      const inRechargeZone = distanceFromRechargeCenter <= RECHARGE_ZONE_RADIUS;
+      // Check if player is in recharge zone and refill paint
+      const inRechargeZone = isInCircularZone(
+        position,
+        RECHARGE_ZONE_CENTER_X,
+        RECHARGE_ZONE_CENTER_Y,
+        GAME_CONFIG.RECHARGE_ZONE_RADIUS
+      );
       
-      if (inRechargeZone && player.paintSupply < MAX_PAINT_SUPPLY) {
-        player.paintSupply = Math.min(MAX_PAINT_SUPPLY, player.paintSupply + RECHARGE_RATE);
+      if (inRechargeZone && player.paintSupply < GAME_CONFIG.MAX_PAINT_SUPPLY) {
+        player.paintSupply = clamp(
+          player.paintSupply + GAME_CONFIG.RECHARGE_RATE,
+          0,
+          GAME_CONFIG.MAX_PAINT_SUPPLY
+        );
         
         // Broadcast paint supply update
         const update: PaintSupplyUpdate = {
@@ -123,41 +128,13 @@ export class GameRoom {
     }
   }
 
-  // Convert world position to grid coordinates
-  private worldToGrid(position: Position): { x: number; y: number } | null {
-    // Grid is centered at origin (0, 0)
-    const gridPixelSize = GRID_SIZE * CELL_PIXEL_SIZE;
-    const halfGrid = gridPixelSize / 2;
-    
-    // Convert world coordinates to grid coordinates
-    const gridX = Math.floor((position.x + halfGrid) / CELL_PIXEL_SIZE);
-    const gridY = Math.floor((position.y + halfGrid) / CELL_PIXEL_SIZE);
-    
-    // Check if within bounds
-    if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
-      return { x: gridX, y: gridY };
-    }
-    
-    return null;
-  }
-
-  // Calculate game progress
+  // Calculate game progress using running counter
   private calculateProgress(): GameProgress {
-    let totalCells = GRID_SIZE * GRID_SIZE;
-    let paintedCells = 0;
-    
-    for (let y = 0; y < GRID_SIZE; y++) {
-      for (let x = 0; x < GRID_SIZE; x++) {
-        if (this.grid[y][x].painted) {
-          paintedCells++;
-        }
-      }
-    }
-    
+    const totalCells = GRID_SIZE * GRID_SIZE;
     return {
       totalCells,
-      paintedCells,
-      percentageComplete: Math.round((paintedCells / totalCells) * 100),
+      paintedCells: this.paintedCellsCount,
+      percentageComplete: Math.round((this.paintedCellsCount / totalCells) * 100),
     };
   }
 
@@ -167,15 +144,12 @@ export class GameRoom {
     if (!player) return;
 
     // Check if player has enough paint supply
-    if (player.paintSupply < PAINT_COST_PER_CELL) {
-      console.log(`Player ${player.username} has insufficient paint supply (${player.paintSupply})`);
+    if (player.paintSupply < GAME_CONFIG.PAINT_COST_PER_CELL) {
       return;
     }
 
-    console.log(`Processing paint request from ${player.username} with color ${request.color}`);
-
     // Check if position is on grid
-    const gridCoords = this.worldToGrid(request.position);
+    const gridCoords = worldToGrid(request.position, GRID_SIZE, CELL_PIXEL_SIZE);
     
     if (gridCoords) {
       const cell = this.grid[gridCoords.y][gridCoords.x];
@@ -185,7 +159,7 @@ export class GameRoom {
       
       if (success) {
         // Deduct paint supply
-        player.paintSupply = Math.max(0, player.paintSupply - PAINT_COST_PER_CELL);
+        player.paintSupply = Math.max(0, player.paintSupply - GAME_CONFIG.PAINT_COST_PER_CELL);
         
         // Broadcast paint supply update
         const supplyUpdate: PaintSupplyUpdate = {
@@ -194,12 +168,10 @@ export class GameRoom {
         };
         this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, supplyUpdate);
         
-        // Paint the cell
+        // Paint the cell and increment counter
         cell.currentColor = request.color;
         cell.painted = true;
-        console.log(`Cell (${gridCoords.x}, ${gridCoords.y}) painted with color ${request.color}! Paint supply: ${player.paintSupply}`);
-      } else {
-        console.log(`Cell (${gridCoords.x}, ${gridCoords.y}) paint failed - already painted: ${cell.painted}, correct color: ${cell.number === request.colorNumber}`);
+        this.paintedCellsCount++;
       }
       
       // Create paint event
@@ -226,15 +198,12 @@ export class GameRoom {
         
         // Check if game is complete
         if (progress.percentageComplete === 100) {
-          console.log('Painting complete!');
           this.io.emit(SocketEvents.GAME_COMPLETE, {
             message: 'Painting Complete!',
             progress,
           });
         }
       }
-    } else {
-      console.log('Paint request outside grid');
     }
   }
 
@@ -265,36 +234,30 @@ export function setupSocketHandlers(io: Server): void {
   const gameRoom = new GameRoom(io);
 
   io.on('connection', (socket: Socket) => {
-    console.log(`Player connected: ${socket.id}`);
-
-    // Handle player join
+    // Handle player join with validation
     socket.on(SocketEvents.JOIN, (data: { username: string; startPosition?: Position }) => {
+      // Validate username
+      const username = data.username?.trim().slice(0, 20);
+      if (!username) {
+        socket.emit('error', { message: 'Invalid username' });
+        return;
+      }
+      
       // Random starting position (top-down view)
       const startPosition: Position = data.startPosition || {
         x: Math.random() * 400 - 200,
         y: Math.random() * 400 - 200,
       };
       
-      console.log(`Player ${data.username} (${socket.id}) joining at position:`, startPosition);
-      
-      const player = gameRoom.addPlayer(socket.id, data.username, startPosition);
-      
-      // Get current game state
-      const gameState = gameRoom.getGameState();
-      console.log(`Sending game state to ${data.username}:`, {
-        playerCount: gameState.players.length,
-        players: gameState.players.map(p => ({ id: p.id, username: p.username })),
-        paintedCells: gameState.progress.paintedCells,
-      });
+      const player = gameRoom.addPlayer(socket.id, username, startPosition);
       
       // Send current game state to new player
+      const gameState = gameRoom.getGameState();
       socket.emit(SocketEvents.GAME_STATE, gameState);
       
       // Broadcast to all OTHER players (not the one who just joined)
       gameRoom.broadcastPlayerList();
       socket.broadcast.emit(SocketEvents.PLAYER_JOINED, player);
-      
-      console.log(`Total players in game: ${gameState.players.length}`);
     });
 
     // Handle player movement
@@ -311,7 +274,6 @@ export function setupSocketHandlers(io: Server): void {
 
     // Handle disconnect
     socket.on('disconnect', () => {
-      console.log(`Player disconnected: ${socket.id}`);
       gameRoom.removePlayer(socket.id);
       gameRoom.broadcastPlayerList();
       io.emit(SocketEvents.PLAYER_LEFT, { playerId: socket.id });
