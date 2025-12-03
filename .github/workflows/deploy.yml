@@ -28,7 +28,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no $USER@$HOST << 'EOF'
             set -e
 
-            cd ~/dice-game
+            cd ~/paint-game
 
             # 1. Get latest code
             git fetch origin
