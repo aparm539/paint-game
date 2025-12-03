@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'dice-game',
     script: './server/dist/server/src/index.js',
-    cwd: '/Users/sunny/dice-game',
+    cwd: '/home/deploy/paint-game',
     instances: 1,
     autorestart: true,
     watch: false,
