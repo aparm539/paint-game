@@ -12,9 +12,8 @@ if (!usernameScreen || !gameScreen || !usernameInput || !joinButton || !canvas) 
   throw new Error('Required DOM elements not found');
 }
 
-// Initialize socket client with URL from environment variable
-const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
-const socketClient = new SocketClient(serverUrl);
+// Initialize socket client - uses relative URL to connect via same host/protocol as page
+const socketClient = new SocketClient();
 
 // Initialize game
 let game: Game | null = null;

@@ -43,8 +43,9 @@ export class SocketClient {
   private cachedUsername: string = '';
   private positionProvider: (() => Position | undefined) | null = null;
 
-  constructor(serverUrl: string = 'http://localhost:3000') {
-    this.socket = io(serverUrl, {
+  constructor() {
+    // Use relative URL - socket.io will connect to the same host/protocol as the page
+    this.socket = io({
       reconnection: true,
       reconnectionAttempts: GAME_CONFIG.RECONNECTION_ATTEMPTS,
       reconnectionDelay: GAME_CONFIG.RECONNECTION_DELAY,
