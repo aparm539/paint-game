@@ -1069,6 +1069,12 @@ export class Game {
     const shopContainer = document.getElementById('shop-container');
     if (!shopContainer) return;
 
+    // Check if shop UI already exists to avoid duplicates
+    if (document.getElementById('shop-button')) {
+      this.updateShopUI();
+      return;
+    }
+
     // Create shop button
     const shopButton = document.createElement('button');
     shopButton.id = 'shop-button';
