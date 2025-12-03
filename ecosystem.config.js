@@ -1,6 +1,6 @@
 module.exports = {
   apps: [{
-    name: 'dice-game',
+    name: 'paint-game',
     script: './server/dist/server/src/index.js',
     cwd: '/home/deploy/paint-game',
     instances: 1,
