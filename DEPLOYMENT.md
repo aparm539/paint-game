@@ -1,25 +1,49 @@
 # Production Deployment Guide
 
-This guide covers deploying the Dice Game multiplayer application to a VPS (Virtual Private Server).
+This guide covers deploying the Dice Game multiplayer application to a DigitalOcean Droplet using automated CI/CD via GitHub Actions.
+
+## Deployment Overview
+
+The application uses **automated continuous deployment**. When you push to the `main` branch, GitHub Actions automatically:
+
+1. Connects to your DigitalOcean droplet via SSH
+2. Pulls the latest code
+3. Installs dependencies
+4. Builds the client and server
+5. Restarts the application with PM2
 
 ## Prerequisites
 
-Before deploying, ensure your VPS has:
+### GitHub Repository Secrets
+
+Configure the following secrets in your GitHub repository (Settings → Secrets and variables → Actions):
+
+| Secret | Description |
+|--------|-------------|
+| `DROPLET_SSH_KEY` | Private SSH key (ed25519) for connecting to the droplet |
+| `DROPLET_HOST` | IP address or hostname of your DigitalOcean droplet |
+| `DROPLET_USER` | SSH username for the droplet (e.g., `root` or a sudo user) |
+
+### DigitalOcean Droplet Requirements
+
+Ensure your droplet has:
 
 - **Node.js 18+** and npm installed
-- **Git** for cloning the repository
+- **Git** for pulling updates
 - **PM2** installed globally: `npm install -g pm2`
 - Sufficient RAM (minimum 512MB recommended)
-- Open ports: 
+- SSH key authentication configured
+- Open ports:
+  - Port 22 for SSH
   - Port 3000 (or your chosen PORT) for the application
   - Port 80/443 if using a reverse proxy (recommended)
 
-## Initial VPS Setup
+## Initial Droplet Setup (One-Time)
 
-### 1. Connect to Your VPS
+### 1. Connect to Your Droplet
 
 ```bash
-ssh user@your-vps-ip
+ssh user@your-droplet-ip
 ```
 
 ### 2. Install Node.js (if not already installed)
@@ -44,13 +68,13 @@ sudo npm install -g pm2
 
 ```bash
 cd ~
-git clone <your-repository-url> dice-game
-cd dice-game
+git clone <your-repository-url> paint-game
+cd paint-game
 ```
 
-## Configuration
+**Note:** The CI/CD workflow expects the repository to be cloned to `~/paint-game` on the droplet.
 
-### 1. Set Up Environment Variables
+### 5. Set Up Environment Variables
 
 Create environment files from the examples:
 
@@ -68,7 +92,7 @@ CORS_ORIGIN=http://your-domain.com,https://your-domain.com
 NODE_ENV=production
 ```
 
-**Important:** Replace `your-domain.com` with your actual domain or VPS IP address.
+**Important:** Replace `your-domain.com` with your actual domain or droplet IP address.
 
 ```bash
 # Client environment (for rebuilding if needed)
@@ -82,7 +106,7 @@ nano client/.env
 VITE_SERVER_URL=http://your-domain.com:3000
 ```
 
-### 2. Update PM2 Configuration
+### 6. Update PM2 Configuration
 
 Edit `ecosystem.config.js` to update the `cwd` path:
 
@@ -90,50 +114,112 @@ Edit `ecosystem.config.js` to update the `cwd` path:
 nano ecosystem.config.js
 ```
 
-Change the `cwd` value from `/Users/sunny/dice-game` to your actual deployment path (e.g., `/home/youruser/dice-game`).
+Change the `cwd` value to your actual deployment path (e.g., `/home/youruser/paint-game` or `/root/paint-game`).
 
-## Building and Deployment
+### 7. Initial Manual Deployment
 
-### Option 1: Using the Deployment Script (Recommended)
-
-Make the deployment script executable and run it:
+For the first deployment, run manually:
 
 ```bash
+# Install dependencies
+npm install
+
+# Build the client
+cd client
+npm install
+npm run build
+cd ..
+
+# Build the server
+cd server
+npm install
+npm run build
+cd ..
+
+# Create logs directory
+mkdir -p logs
+
+# Start with PM2
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+## Automated Deployment (CI/CD)
+
+After the initial setup, all subsequent deployments are automatic:
+
+1. **Push to main branch** - Commit and push your changes to the `main` branch
+2. **GitHub Actions triggers** - The deployment workflow runs automatically
+3. **Droplet updates** - The workflow SSHs into your droplet and deploys the changes
+
+### What the CI/CD Pipeline Does
+
+```yaml
+# On every push to main:
+1. Checkout code
+2. Set up SSH connection using secrets
+3. SSH to droplet and run:
+   - git fetch origin && git reset --hard origin/main
+   - npm install (root dependencies)
+   - cd client && npm install && npm run build
+   - cd server && npm install && npm run build
+   - pm2 startOrReload ecosystem.config.js --update-env
+   - pm2 save
+```
+
+### Monitoring Deployments
+
+- View deployment status in GitHub → Actions tab
+- Check logs for any failures
+- Green checkmark = successful deployment
+
+## Manual Deployment (Alternative)
+
+If you need to deploy manually without CI/CD:
+
+### Using the Deployment Script
+
+SSH into your droplet and run:
+
+```bash
+cd ~/paint-game
 chmod +x deploy.sh
 ./deploy.sh
 ```
 
-This script will:
-1. Install all dependencies
-2. Build the client with production settings
-3. Build the server
-4. Start the application with PM2
+## Updating the Application
 
-### Option 2: Manual Deployment
+### Automatic Updates (Recommended)
 
-If you prefer to deploy manually:
+Simply push to the `main` branch:
 
 ```bash
-# 1. Install dependencies
+git add .
+git commit -m "Your changes"
+git push origin main
+```
+
+The CI/CD pipeline will handle the rest automatically.
+
+### Manual Updates
+
+If you need to update manually on the droplet:
+
+```bash
+ssh user@your-droplet-ip
+cd ~/paint-game
+
+# Pull latest changes
+git pull origin main
+
+# Install dependencies and rebuild
 npm install
+cd client && npm install && npm run build && cd ..
+cd server && npm install && npm run build && cd ..
 
-# 2. Build the client
-cd client
-npm run build
-cd ..
-
-# 3. Build the server
-cd server
-npm run build
-cd ..
-
-# 4. Create logs directory
-mkdir -p logs
-
-# 5. Start with PM2
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup
+# Restart with PM2
+pm2 restart dice-game
 ```
 
 ## Managing the Application
@@ -180,25 +266,6 @@ pm2 info dice-game
 
 ```bash
 pm2 monit
-```
-
-## Updating the Application
-
-When you need to deploy updates:
-
-```bash
-# 1. Pull latest changes
-git pull origin main
-
-# 2. Install any new dependencies
-npm install
-
-# 3. Rebuild client and server
-cd client && npm run build && cd ..
-cd server && npm run build && cd ..
-
-# 4. Restart with PM2
-pm2 restart dice-game
 ```
 
 ## Health Check
@@ -315,6 +382,16 @@ sudo ufw enable
 
 ## Troubleshooting
 
+### CI/CD Deployment Fails
+
+1. Check GitHub Actions logs in the Actions tab
+2. Verify GitHub secrets are configured correctly:
+   - `DROPLET_SSH_KEY` - Must be a valid private key
+   - `DROPLET_HOST` - Correct IP/hostname
+   - `DROPLET_USER` - User with SSH access
+3. Ensure SSH key is added to droplet's authorized_keys
+4. Check droplet is accessible and running
+
 ### Application Won't Start
 
 1. Check PM2 logs:
@@ -390,7 +467,8 @@ Consider setting up monitoring tools:
 ## Support
 
 For issues or questions:
-- Check the logs: `pm2 logs dice-game`
+- Check GitHub Actions logs for deployment failures
+- Check PM2 logs: `pm2 logs dice-game`
 - Review the main README.md for game mechanics
 - Verify your environment configuration matches production requirements
 
