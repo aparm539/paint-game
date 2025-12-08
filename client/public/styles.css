@@ -339,6 +339,12 @@ body {
   border-radius: 10px;
 }
 
+#paint-supply-bar {
+  height: 100%;
+  transition: width 0.3s ease, background 0.3s ease;
+  border-radius: 10px;
+}
+
 /* Player color dot */
 .player-color-dot {
   display: inline-block;
