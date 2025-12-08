@@ -574,10 +574,19 @@ export class Game {
   private updatePlayers(players: Player[]): void {
     players.forEach((player) => {
       const existingPlayer = this.players.get(player.id);
-      if (existingPlayer && player.id !== this.currentPlayerId) {
-        // For other players, preserve current position and set target for interpolation
-        player.targetPosition = { ...player.position };
-        player.position = { ...existingPlayer.position };
+      if (existingPlayer) {
+        if (player.id !== this.currentPlayerId) {
+          // For other players, preserve current position and set target for interpolation
+          player.targetPosition = { ...player.position };
+          player.position = { ...existingPlayer.position };
+        } else {
+          // For current player, preserve position but update other properties
+          const preservedPosition = { ...existingPlayer.position };
+          this.players.set(player.id, player);
+          // Restore the preserved position
+          this.players.get(player.id)!.position = preservedPosition;
+          return; // Skip the set below since we already did it
+        }
       }
       // Ensure cellsPainted is initialized
       if (player.cellsPainted === undefined) {
