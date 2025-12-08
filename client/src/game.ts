@@ -624,7 +624,7 @@ export class Game {
     }
     
     // Update crown visibility after creating avatar
-    // this.updateCrowns();
+    this.updateCrowns();
   }
 
   private updateAvatarPosition(player: Player): void {
@@ -682,7 +682,7 @@ export class Game {
     });
     
     // Update crowns after updating player list
-    // this.updateCrowns();
+    this.updateCrowns();
   }
 
   private createColorPaletteUI(): void {
@@ -813,7 +813,7 @@ export class Game {
     });
     
     // Update crown visibility
-    // this.updateCrowns();
+    this.updateCrowns();
   }
   
   private updateCrowns(): void {
