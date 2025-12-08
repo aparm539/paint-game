@@ -93,6 +93,7 @@ export interface GoldUpdate {
 // Shop and Upgrades
 export interface PlayerUpgrades {
   movementSpeed: number; // Level 0-5, each level increases speed
+  maxPaintSupply: number; // Level 0-5, each level increases max paint supply
 }
 
 export interface UpgradeInfo {

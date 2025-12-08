@@ -37,7 +37,7 @@ export class Game {
   private moveEmitThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE;
   
   // Player upgrades
-  private upgrades: PlayerUpgrades = { movementSpeed: 0 };
+  private upgrades: PlayerUpgrades = { movementSpeed: 0, maxPaintSupply: 0 };
   private isShopOpen: boolean = false;
   
   // Painting state
@@ -859,23 +859,28 @@ export class Game {
     const currentPlayer = this.players.get(this.currentPlayerId);
     if (!currentPlayer) return;
     
+    // Calculate max paint supply based on upgrades
+    const maxPaintSupplyLevel = this.upgrades.maxPaintSupply || 0;
+    const maxPaintSupply = GAME_CONFIG.MAX_PAINT_SUPPLY + (maxPaintSupplyLevel * GAME_CONFIG.UPGRADES.maxPaintSupply.effectPerLevel);
+    const paintPercentage = (currentPlayer.paintSupply / maxPaintSupply) * 100;
+    
     const paintSupplyEl = document.getElementById('paint-supply');
     const paintSupplyBar = document.getElementById('paint-supply-bar');
     
     if (paintSupplyEl) {
-      paintSupplyEl.textContent = `Paint: ${Math.round(currentPlayer.paintSupply)}%`;
+      paintSupplyEl.textContent = `Paint: ${Math.round(currentPlayer.paintSupply)}/${maxPaintSupply}`;
     }
     
     if (paintSupplyBar) {
-      paintSupplyBar.style.width = `${currentPlayer.paintSupply}%`;
+      paintSupplyBar.style.width = `${paintPercentage}%`;
       
-      // Change color based on supply level
-      if (currentPlayer.paintSupply > 50) {
-        paintSupplyBar.style.background = 'linear-gradient(90deg, #4caf50, #8bc34a)';
-      } else if (currentPlayer.paintSupply > 20) {
-        paintSupplyBar.style.background = 'linear-gradient(90deg, #ff9800, #ffb74d)';
+      // Change color based on supply level (using percentage)
+      if (paintPercentage > 50) {
+        paintSupplyBar.style.background = ' #4caf50';
+      } else if (paintPercentage > 20) {
+        paintSupplyBar.style.background = ' #ff9800';
       } else {
-        paintSupplyBar.style.background = 'linear-gradient(90deg, #f44336, #e57373)';
+        paintSupplyBar.style.background = ' #f44336';
       }
     }
   }
@@ -886,7 +891,7 @@ export class Game {
     
     const goldDisplayEl = document.getElementById('gold-display');
     if (goldDisplayEl) {
-      goldDisplayEl.textContent = `🪙 ${currentPlayer.gold}`;
+      goldDisplayEl.textContent = `🪙 ${Math.round(currentPlayer.gold)}`;
     }
   }
 
@@ -1036,6 +1041,21 @@ export class Game {
     const speedLevel = this.upgrades.movementSpeed;
     const speedBonus = speedLevel * GAME_CONFIG.UPGRADES.movementSpeed.effectPerLevel;
     this.movementSpeed = this.baseMovementSpeed + speedBonus;
+    
+    // Apply max paint supply upgrade
+    const player = this.players.get(this.currentPlayerId);
+    if (player) {
+      const maxPaintSupplyLevel = this.upgrades.maxPaintSupply;
+      if (maxPaintSupplyLevel > 0) {
+        const newMaxPaintSupply = GAME_CONFIG.MAX_PAINT_SUPPLY + 
+          (maxPaintSupplyLevel * GAME_CONFIG.UPGRADES.maxPaintSupply.effectPerLevel);
+        if (player.paintSupply >= GAME_CONFIG.MAX_PAINT_SUPPLY) {
+          player.paintSupply = newMaxPaintSupply;
+        }
+      }
+    }
+    
+    this.updatePaintSupplyUI();
   }
 
   private showShopMessage(message: string, type: 'success' | 'error'): void {
@@ -1069,35 +1089,17 @@ export class Game {
     const shopContainer = document.getElementById('shop-container');
     if (!shopContainer) return;
 
-    // Check if shop UI already exists to avoid duplicates
-    if (document.getElementById('shop-button')) {
-      this.updateShopUI();
-      return;
+    // Set up shop button click handler
+    const shopButton = document.getElementById('shop-button');
+    if (shopButton) {
+      shopButton.onclick = () => this.toggleShop();
     }
 
-    // Create shop button
-    const shopButton = document.createElement('button');
-    shopButton.id = 'shop-button';
-    shopButton.textContent = '🛒 Shop';
-    shopButton.onclick = () => this.toggleShop();
-    shopContainer.appendChild(shopButton);
-
-    // Create shop panel
-    const shopPanel = document.createElement('div');
-    shopPanel.id = 'shop-panel';
-    shopPanel.className = 'hidden';
-    shopPanel.innerHTML = `
-      <div class="shop-header">
-        <h3>🛒 Shop</h3>
-        <button id="shop-close" class="shop-close">✕</button>
-      </div>
-      <div id="shop-message" class="shop-message hidden"></div>
-      <div id="shop-items"></div>
-    `;
-    shopContainer.appendChild(shopPanel);
-
-    // Add close button handler
-    document.getElementById('shop-close')?.addEventListener('click', () => this.toggleShop());
+    // Set up close button click handler
+    const shopClose = document.getElementById('shop-close');
+    if (shopClose) {
+      shopClose.onclick = () => this.toggleShop();
+    }
 
     this.updateShopUI();
   }
@@ -1112,31 +1114,31 @@ export class Game {
     shopItems.innerHTML = '';
 
     // Movement Speed Upgrade
-    const upgradeConfig = GAME_CONFIG.UPGRADES.movementSpeed;
-    const currentLevel = this.upgrades.movementSpeed;
-    const isMaxLevel = currentLevel >= upgradeConfig.maxLevel;
-    const cost = isMaxLevel ? 0 : upgradeConfig.baseCost * Math.pow(upgradeConfig.costMultiplier, currentLevel);
-    const canAfford = playerGold >= cost;
+    const speedUpgradeConfig = GAME_CONFIG.UPGRADES.movementSpeed;
+    const speedCurrentLevel = this.upgrades.movementSpeed;
+    const speedIsMaxLevel = speedCurrentLevel >= speedUpgradeConfig.maxLevel;
+    const speedCost = Math.round(speedIsMaxLevel ? 0 : speedUpgradeConfig.baseCost * Math.pow(speedUpgradeConfig.costMultiplier, speedCurrentLevel));
+    const speedCanAfford = playerGold >= speedCost;
 
-    const itemDiv = document.createElement('div');
-    itemDiv.className = 'shop-item';
+    const speedItemDiv = document.createElement('div');
+    speedItemDiv.className = 'shop-item';
     
-    itemDiv.innerHTML = `
+    speedItemDiv.innerHTML = `
       <div class="shop-item-info">
-        <div class="shop-item-name">🏃 ${upgradeConfig.name}</div>
-        <div class="shop-item-desc">${upgradeConfig.description}</div>
-        <div class="shop-item-level">Level: ${currentLevel}/${upgradeConfig.maxLevel}</div>
-        <div class="shop-item-effect">Current bonus: +${(currentLevel * upgradeConfig.effectPerLevel).toFixed(1)} speed</div>
+        <div class="shop-item-name">🏃 ${speedUpgradeConfig.name}</div>
+        <div class="shop-item-desc">${speedUpgradeConfig.description}</div>
+        <div class="shop-item-level">Level: ${speedCurrentLevel}/${speedUpgradeConfig.maxLevel}</div>
+        <div class="shop-item-effect">Current bonus: +${(speedCurrentLevel * speedUpgradeConfig.effectPerLevel).toFixed(1)} speed</div>
       </div>
-      <button class="shop-buy-btn ${isMaxLevel ? 'maxed' : (!canAfford ? 'disabled' : '')}" 
-              ${isMaxLevel || !canAfford ? 'disabled' : ''}>
-        ${isMaxLevel ? 'MAX' : `🪙 ${cost}`}
+      <button class="shop-buy-btn ${speedIsMaxLevel ? 'maxed' : (!speedCanAfford ? 'disabled' : '')}" 
+              ${speedIsMaxLevel || !speedCanAfford ? 'disabled' : ''}>
+        ${speedIsMaxLevel ? 'MAX' : `🪙 ${speedCost}`}
       </button>
     `;
 
-    const buyBtn = itemDiv.querySelector('.shop-buy-btn');
-    if (buyBtn && !isMaxLevel && canAfford) {
-      buyBtn.addEventListener('click', () => {
+    const speedBuyBtn = speedItemDiv.querySelector('.shop-buy-btn');
+    if (speedBuyBtn && !speedIsMaxLevel && speedCanAfford) {
+      speedBuyBtn.addEventListener('click', () => {
         this.socketClient.purchaseUpgrade({
           playerId: this.currentPlayerId,
           upgradeId: 'movementSpeed',
@@ -1144,7 +1146,43 @@ export class Game {
       });
     }
 
-    shopItems.appendChild(itemDiv);
+    shopItems.appendChild(speedItemDiv);
+
+    // Max Paint Supply Upgrade
+    const paintUpgradeConfig = GAME_CONFIG.UPGRADES.maxPaintSupply;
+    const paintCurrentLevel = this.upgrades.maxPaintSupply;
+    const paintIsMaxLevel = paintCurrentLevel >= paintUpgradeConfig.maxLevel;
+    const paintCost = Math.round(paintIsMaxLevel ? 0 : paintUpgradeConfig.baseCost * Math.pow(paintUpgradeConfig.costMultiplier, paintCurrentLevel));
+    const paintCanAfford = playerGold >= paintCost;
+    const currentMaxPaint = GAME_CONFIG.MAX_PAINT_SUPPLY + (paintCurrentLevel * paintUpgradeConfig.effectPerLevel);
+
+    const paintItemDiv = document.createElement('div');
+    paintItemDiv.className = 'shop-item';
+    
+    paintItemDiv.innerHTML = `
+      <div class="shop-item-info">
+        <div class="shop-item-name">🎨 ${paintUpgradeConfig.name}</div>
+        <div class="shop-item-desc">${paintUpgradeConfig.description}</div>
+        <div class="shop-item-level">Level: ${paintCurrentLevel}/${paintUpgradeConfig.maxLevel}</div>
+        <div class="shop-item-effect">Current max: ${currentMaxPaint} paint</div>
+      </div>
+      <button class="shop-buy-btn ${paintIsMaxLevel ? 'maxed' : (!paintCanAfford ? 'disabled' : '')}" 
+              ${paintIsMaxLevel || !paintCanAfford ? 'disabled' : ''}>
+        ${paintIsMaxLevel ? 'MAX' : `🪙 ${paintCost}`}
+      </button>
+    `;
+
+    const paintBuyBtn = paintItemDiv.querySelector('.shop-buy-btn');
+    if (paintBuyBtn && !paintIsMaxLevel && paintCanAfford) {
+      paintBuyBtn.addEventListener('click', () => {
+        this.socketClient.purchaseUpgrade({
+          playerId: this.currentPlayerId,
+          upgradeId: 'maxPaintSupply',
+        });
+      });
+    }
+
+    shopItems.appendChild(paintItemDiv);
   }
 }
 

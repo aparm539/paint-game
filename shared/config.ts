@@ -19,7 +19,7 @@ export const GAME_CONFIG = {
   RECHARGE_RATE: 2,
   
   // Gold rewards
-  GOLD_REWARD_BASE: 5, // Gold per grid cell on completion (reward = gridSize * gridSize * base)
+  GOLD_REWARD_BASE: 25, // Gold per grid cell on completion (reward = gridSize * gridSize * base)
   
   // Recharge zone
   RECHARGE_ZONE_RADIUS: 120,
@@ -43,12 +43,21 @@ export const GAME_CONFIG = {
   UPGRADES: {
     movementSpeed: {
       id: 'movementSpeed' as const,
-      name: 'Swift Feet',
-      description: 'Increase movement speed',
+      name: 'Boots',
+      description: 'Zoom',
       maxLevel: 5,
-      baseCost: 10,
-      costMultiplier: 2, // Cost doubles each level: 10, 20, 40, 80, 160
-      effectPerLevel: 0.5, // +0.5 speed per level
+      baseCost: 5,
+      costMultiplier: 2, 
+      effectPerLevel: 0.75,
+    },
+    maxPaintSupply: {
+      id: 'maxPaintSupply' as const,
+      name: 'Paint Tank',
+      description: 'Increase max paint capacity',
+      maxLevel: 5,
+      baseCost: 5,
+      costMultiplier: 2, 
+      effectPerLevel: 30, 
     },
   },
 } as const;

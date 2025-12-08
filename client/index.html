@@ -3,16 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Paint Balloon Color-by-Numbers</title>
+    <title>Color by Numbers</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎨</text></svg>">
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div id="app">
-      <!-- Username Input Screen -->
       <div id="username-screen" class="screen">
         <div class="username-container">
-          <h1>Paint Balloon Game</h1>
-          <p style="color: #666; margin-bottom: 1rem;">Work together to complete the color-by-numbers painting!</p>
+          <h1>Colour by Numbers</h1>
+          <p class="username-description">Work together to fill in the painting!</p>
           <input
             type="text"
             id="username-input"
@@ -23,63 +23,62 @@
         </div>
       </div>
 
-      <!-- Game Screen -->
       <div id="game-screen" class="screen hidden">
         <div class="game-container">
-          <!-- Sidebar with Players and Controls -->
-          <div style="grid-column: 1; grid-row: 1 / -1; display: flex; flex-direction: column; gap: 1rem;">
-            <!-- Player List -->
-            <div id="player-list" class="player-list"></div>
+          <div id="player-list" class="player-list"></div>
+
+          <div id="sidebar">
             
-            <!-- Color Palette -->
             <div id="color-palette"></div>
             
-            <!-- Paint Supply -->
-            <div style="background: rgba(255, 255, 255, 0.95); border-radius: 10px; padding: 1rem;">
-              <div id="paint-supply" style="font-weight: bold; margin-bottom: 0.5rem; color: #333;">Paint: 100%</div>
+            <div class="paint-supply-container">
+              <div id="paint-supply">Paint: 100%</div>
               <div class="progress-bar-container">
-                <div id="paint-supply-bar" style="width: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);"></div>
-              </div>
-              <div style="font-size: 0.75rem; color: #666; margin-top: 0.5rem;">
-                Go to the recharge station to refill!
+                <div id="paint-supply-bar"></div>
               </div>
             </div>
             
-            <!-- Gold Display -->
-            <div id="gold-container">
-              <div id="gold-display">🪙 0</div>
+            <div id="shop-container">
+              
+              <button id="shop-button">
+                🛒 Shop
+                <p id="gold-display">🪙 0</p>
+              </button>
+              
+              <div id="shop-panel" class="hidden">
+                <div class="shop-header">
+                  <h3>🛒 Shop</h3>
+                  
+                  <button id="shop-close" class="shop-close">✕</button>
+                </div>
+                <div id="shop-message" class="shop-message hidden"></div>
+                <div id="shop-items"></div>
+              </div>
             </div>
             
-            <!-- Shop -->
-            <div id="shop-container"></div>
-            
-            <!-- Instructions -->
-            <div style="background: rgba(255, 255, 255, 0.95); border-radius: 10px; padding: 1rem; font-size: 0.85rem; color: #666;">
+            <div class="instructions">
               <strong>How to Play:</strong><br>
               • Move: WASD or Arrow keys<br>
               • Select color: Number keys (1-6)<br>
               • Paint: Hold Space while moving<br>
               • Match numbers to colors!
             </div>
-          </div>
-
-          <!-- Playing Field -->
-          <div id="playing-field-container">
-            <canvas id="playing-field"></canvas>
-            <div id="trajectory-preview" class="trajectory-preview hidden"></div>
-          </div>
-
-          <!-- Game Info -->
-          <div class="game-info">
-            <div>
-              <div id="current-player" class="current-player"></div>
-              <div id="paint-progress" style="margin-top: 0.5rem;">Progress: 0/400 (0%)</div>
-              <div class="progress-bar-container">
-                <div id="progress-bar" style="width: 0%;"></div>
+            <div class="game-info">
+              <div>
+                <div id="current-player" class="current-player"></div>
+                <div id="paint-progress">Progress: 0/400 (0%)</div>
+                <div class="progress-bar-container">
+                  <div id="progress-bar"></div>
+                </div>
               </div>
             </div>
-            <div id="game-status" class="game-status">Paint by matching balloon colors to cell numbers!</div>
           </div>
+
+          <div id="playing-field-container">
+            <canvas id="playing-field"></canvas>
+          </div>
+
+          
         </div>
       </div>
     </div>

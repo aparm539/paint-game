@@ -10,7 +10,7 @@ body {
   display: flex;
   justify-content: center;
   align-items: center;
-  color: #333;
+  color: black;
 }
 
 .screen {
@@ -25,19 +25,21 @@ body {
   display: none;
 }
 
-/* Username Screen */
+
 .username-container {
   background: white;
   padding: 2rem 3rem;
   border-radius: 20px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
   text-align: center;
 }
 
 .username-container h1 {
   margin-bottom: 2rem;
-  color: black;
   font-size: 2.5rem;
+}
+
+.username-description {
+  margin-bottom: 1rem;
 }
 
 #username-input {
@@ -70,7 +72,7 @@ body {
   transform: translateY(0);
 }
 
-/* Game Screen */
+
 .game-container {
   display: grid;
   grid-template-columns: 250px 1fr;
@@ -84,12 +86,13 @@ body {
 
 .player-list {
   grid-column: 1;
-  grid-row: 1 / -1;
+  grid-row: 2;
   background: rgba(255, 255, 255, 0.95);
   border-radius: 15px;
   padding: 1rem;
   overflow-y: auto;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  border: black;
+  border-style: solid;
 }
 
 .player-list h2 {
@@ -99,7 +102,7 @@ body {
 }
 
 .player-item {
-  padding: 0.75rem;
+  padding: 0.2rem 0 0.2rem 1rem;
   margin-bottom: 0.5rem;
   background: #f5f5f5;
   border-radius: 8px;
@@ -111,14 +114,19 @@ body {
   border-left-color: #4caf50;
 }
 
-.player-item.eliminated {
-  opacity: 0.5;
-  text-decoration: line-through;
-}
-
 .player-name {
   font-weight: bold;
-  margin-bottom: 0.5rem;
+}
+
+#sidebar { 
+  grid-column: 1; 
+  grid-row: 1; 
+  display: flex; 
+  flex-direction: column; 
+  gap: 1rem;
+  border: black solid;
+  border-radius: 15px;
+  padding: 1rem;
 }
 
 
@@ -129,9 +137,10 @@ body {
   background: #2c3e50;
   border-radius: 15px;
   overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
   width: 100%;
   height: 100%;
+  border: black; 
+  border-style: solid;
 }
 
 #playing-field {
@@ -140,65 +149,14 @@ body {
   display: block;
 }
 
-.trajectory-preview {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 10;
-}
-
-.trajectory-preview.hidden {
-  display: none;
-}
-
-.trajectory-line {
-  stroke: rgba(255, 255, 0, 0.6);
-  stroke-width: 2;
-  stroke-dasharray: 5, 5;
-  fill: none;
-}
-
-.landing-marker {
-  fill: rgba(255, 255, 0, 0.3);
-  stroke: rgba(255, 255, 0, 0.8);
-  stroke-width: 2;
-}
-
-.damage-area {
-  fill: rgba(255, 0, 0, 0.2);
-  stroke: rgba(255, 0, 0, 0.8);
-  stroke-width: 2;
-  animation: pulse 0.5s ease-out;
-}
-
-@keyframes pulse {
-  0% {
-    opacity: 0.8;
-    transform: scale(0.8);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
-  }
-  100% {
-    opacity: 0.2;
-    transform: scale(1);
-  }
-}
-
-.game-info {
+#game-info {
   grid-column: 2;
   grid-row: 3;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: rgba(255, 255, 255, 0.95);
   padding: 1rem;
   border-radius: 10px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
 }
 
 .current-player {
@@ -207,48 +165,10 @@ body {
 }
 
 .game-status {
-  color: #666;
+  color: black;
 }
 
-.game-status.painting {
-  color: #ff9800;
-  font-weight: bold;
-  animation: paintingPulse 1.5s ease-in-out infinite;
-}
 
-@keyframes paintingPulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.7;
-  }
-}
-
-.game-status.winner {
-  color: #4caf50;
-  font-weight: bold;
-  font-size: 1.2rem;
-}
-
-.game-status.game-over {
-  color: #f44336;
-  font-weight: bold;
-}
-
-.game-status.complete {
-  color: #4caf50;
-  font-weight: bold;
-  font-size: 1.5rem;
-  animation: celebrate 0.5s ease;
-}
-
-@keyframes celebrate {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.1); }
-}
-
-/* Avatar styles */
 .avatar {
   position: absolute;
   width: 30px;
@@ -279,11 +199,10 @@ body {
   pointer-events: none;
 }
 
-/* Color palette */
+
 #color-palette {
   background: rgba(255, 255, 255, 0.95);
   border-radius: 10px;
-  padding: 1rem;
   margin-bottom: 1rem;
 }
 
@@ -302,7 +221,6 @@ body {
   cursor: pointer;
   font-weight: bold;
   color: white;
-  text-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
   transition: transform 0.2s, border-color 0.2s;
 }
 
@@ -316,10 +234,10 @@ body {
   transform: scale(1.15);
 }
 
-/* Progress bar */
 #paint-progress {
   font-weight: bold;
   margin-bottom: 0.5rem;
+  margin-top: 0.5rem;
   color: #333;
 }
 
@@ -334,18 +252,39 @@ body {
 
 #progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #4caf50, #8bc34a);
+  background:  #8bc34a;
   transition: width 0.5s ease;
   border-radius: 10px;
+  width: 0%;
 }
 
 #paint-supply-bar {
   height: 100%;
   transition: width 0.3s ease, background 0.3s ease;
   border-radius: 10px;
+  width: 100%;
+  background:  #4caf50;
 }
 
-/* Player color dot */
+.paint-supply-container {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 10px;
+}
+
+#paint-supply {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  color: #333;
+}
+
+.instructions {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 10px;
+  padding: 1rem;
+  font-size: 0.85rem;
+}
+
+
 .player-color-dot {
   display: inline-block;
   width: 12px;
@@ -355,7 +294,7 @@ body {
   border: 2px solid #333;
 }
 
-/* Connection overlay */
+
 #connection-overlay {
   position: fixed;
   top: 0;
@@ -422,23 +361,15 @@ body {
   display: none;
 }
 
-/* Gold display */
-#gold-container {
-  background: linear-gradient(135deg, #ffd700, #ffb800);
-  border-radius: 10px;
-  padding: 1rem;
-  box-shadow: 0 2px 8px rgba(255, 215, 0, 0.3);
-}
 
 #gold-display {
-  font-size: 1.5rem;
   font-weight: bold;
-  color: #5d4e00;
   text-align: center;
-  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.5);
+  display: inline;
+  margin-left: 1rem;
 }
 
-/* Shop styles */
+
 #shop-container {
   position: relative;
 }
@@ -448,13 +379,12 @@ body {
   padding: 0.75rem 1rem;
   font-size: 1rem;
   font-weight: bold;
-  background: linear-gradient(135deg, #667eea, #764ba2);
+  background: #764ba2;
   color: white;
   border: none;
   border-radius: 10px;
   cursor: pointer;
   transition: transform 0.2s, box-shadow 0.2s;
-  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
 }
 
 #shop-button:hover {
@@ -464,7 +394,7 @@ body {
 
 #shop-panel {
   position: absolute;
-  bottom: 100%;
+  bottom: -20;
   left: 0;
   right: 0;
   background: rgba(255, 255, 255, 0.98);
@@ -573,8 +503,8 @@ body {
   padding: 0.5rem 1rem;
   font-size: 0.9rem;
   font-weight: bold;
-  background: linear-gradient(135deg, #ffd700, #ffb800);
-  color: #5d4e00;
+  background: #ffb800;
+  color: black;
   border: none;
   border-radius: 6px;
   cursor: pointer;

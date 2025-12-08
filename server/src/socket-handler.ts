@@ -72,6 +72,13 @@ export class GameRoom {
     console.log(`Grid initialized: ${this.currentGridSize}x${this.currentGridSize} with ${NUM_COLORS} colors`);
   }
 
+  // Calculate max paint supply based on player upgrades
+  private getMaxPaintSupply(player: Player): number {
+    const upgradeLevel = player.upgrades.maxPaintSupply || 0;
+    const upgradeBonus = upgradeLevel * GAME_CONFIG.UPGRADES.maxPaintSupply.effectPerLevel;
+    return GAME_CONFIG.MAX_PAINT_SUPPLY + upgradeBonus;
+  }
+
   addPlayer(socketId: string, username: string, startPosition: Position): Player {
     // Assign a random avatar color (different from paint colors)
     const avatarColor = GAME_CONFIG.AVATAR_COLORS[this.players.size % GAME_CONFIG.AVATAR_COLORS.length];
@@ -85,8 +92,13 @@ export class GameRoom {
       gold: 0,
       upgrades: {
         movementSpeed: 0,
+        maxPaintSupply: 0,
       },
     };
+    
+    // Set initial paint supply to max (accounting for upgrades)
+    player.paintSupply = this.getMaxPaintSupply(player);
+    
     this.players.set(socketId, player);
     return player;
   }
@@ -122,11 +134,12 @@ export class GameRoom {
         GAME_CONFIG.RECHARGE_ZONE_RADIUS
       );
       
-      if (inRechargeZone && player.paintSupply < GAME_CONFIG.MAX_PAINT_SUPPLY) {
+      const maxPaintSupply = this.getMaxPaintSupply(player);
+      if (inRechargeZone && player.paintSupply < maxPaintSupply) {
         player.paintSupply = clamp(
           player.paintSupply + GAME_CONFIG.RECHARGE_RATE,
           0,
-          GAME_CONFIG.MAX_PAINT_SUPPLY
+          maxPaintSupply
         );
         
         // Broadcast paint supply update
@@ -388,6 +401,12 @@ export class GameRoom {
     // Process purchase
     player.gold -= cost;
     player.upgrades[request.upgradeId] = currentLevel + 1;
+
+    // If maxPaintSupply upgrade, increase current paint supply to new max
+    if (request.upgradeId === 'maxPaintSupply') {
+      const newMaxPaintSupply = this.getMaxPaintSupply(player);
+      player.paintSupply = newMaxPaintSupply;
+    }
 
     console.log(`[SHOP] ${player.username} purchased ${upgradeConfig.name} level ${currentLevel + 1} for ${cost} gold`);
 
