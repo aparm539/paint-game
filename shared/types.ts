@@ -11,7 +11,9 @@ export interface Player {
   position: Position;
   color: string; // Avatar color for display
   paintSupply: number; // Current paint supply (0-100)
+  pendingPaint: number; // Paint accumulated in recharge zone, waiting to be picked up
   gold: number; // Currency earned from completing grids
+  cellsPainted: number; // Number of cells painted by this player
   upgrades: PlayerUpgrades; // Player's purchased upgrades
   targetPosition?: Position; // For smooth interpolation (client-side only)
 }
@@ -83,6 +85,7 @@ export const SocketEvents = {
 export interface PaintSupplyUpdate {
   playerId: string;
   paintSupply: number;
+  pendingPaint?: number; // Paint waiting to be picked up
 }
 
 export interface GoldUpdate {
@@ -94,6 +97,19 @@ export interface GoldUpdate {
 export interface PlayerUpgrades {
   movementSpeed: number; // Level 0-5, each level increases speed
   maxPaintSupply: number; // Level 0-5, each level increases max paint supply
+  directPickup: number; // Level 0-1, allows direct paint refill from pickup spot without recharge zone
+  autoPaint: number; // Level 0-1, automatically paint cells without pressing space
+  autoPaintOne: number; // Level 0-1, automatically paint cells with number 1 without selecting color
+  autoPaintTwo: number; // Level 0-1, automatically paint cells with number 2 without selecting color
+  autoPaintThree: number; // Level 0-1, automatically paint cells with number 3 without selecting color
+  autoPaintFour: number; // Level 0-1, automatically paint cells with number 4 without selecting color
+  autoPaintFive: number; // Level 0-1, automatically paint cells with number 5 without selecting color
+  autoPaintSix: number; // Level 0-1, automatically paint cells with number 6 without selecting color
+  rescueHat: number; // Level 0-1, changes crown to ⛑️
+  womanHat: number; // Level 0-1, changes crown to 👒
+  topHat: number; // Level 0-1, changes crown to 🎩
+  capHat: number; // Level 0-1, changes crown to 🧢
+  graduationHat: number; // Level 0-1, changes crown to 🎓
 }
 
 export interface UpgradeInfo {

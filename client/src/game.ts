@@ -21,10 +21,13 @@ export class Game {
   private colorNumberMap: Record<number, string> = {};
   private progress: GameProgress = { totalCells: 0, paintedCells: 0, percentageComplete: 0 };
   
-  // Paint supply and recharge zone
-  private rechargeZoneCenterX: number = 0;
-  private rechargeZoneCenterY: number = 0;
-  private rechargeZoneRadius: number = 120;
+    // Paint supply and recharge zone
+    private rechargeZoneCenterX: number = 0;
+    private rechargeZoneCenterY: number = 0;
+    private rechargeZoneRadius: number = 120;
+    private pickupSpotCenterX: number = 0;
+    private pickupSpotCenterY: number = 0;
+    private pickupSpotRadius: number = 40;
   
   // Color selection
   private selectedColorNumber: number = 1;
@@ -37,7 +40,23 @@ export class Game {
   private moveEmitThrottle: number = GAME_CONFIG.MOVE_EMIT_THROTTLE;
   
   // Player upgrades
-  private upgrades: PlayerUpgrades = { movementSpeed: 0, maxPaintSupply: 0 };
+  private upgrades: PlayerUpgrades = { 
+    movementSpeed: 0, 
+    maxPaintSupply: 0, 
+    directPickup: 0,
+    autoPaint: 0,
+    autoPaintOne: 0,
+    autoPaintTwo: 0,
+    autoPaintThree: 0,
+    autoPaintFour: 0,
+    autoPaintFive: 0,
+    autoPaintSix: 0,
+    rescueHat: 0,
+    womanHat: 0,
+    topHat: 0,
+    capHat: 0,
+    graduationHat: 0,
+  };
   private isShopOpen: boolean = false;
   
   // Painting state
@@ -157,8 +176,16 @@ export class Game {
     this.keysPressed.delete(key);
     
     // Space bar to stop painting (release)
+    // But if auto-paint upgrade is active, continue painting automatically
     if (key === ' ' || e.code === 'Space') {
-      this.isPainting = false;
+      const currentPlayer = this.players.get(this.currentPlayerId);
+      if (this.upgrades.autoPaint > 0 && currentPlayer && currentPlayer.paintSupply > 0) {
+        // Auto-paint is active, so keep painting
+        this.isPainting = true;
+      } else {
+        // No auto-paint, stop painting
+        this.isPainting = false;
+      }
       this.updatePaintingStatusUI();
     }
   }
@@ -208,7 +235,15 @@ export class Game {
       this.updatePaintingStatusUI();
     }
 
+    // Auto-paint if upgrade is active (paint without pressing space)
+    // This enables automatic painting, but space bar can still be used for manual control
+    if (this.upgrades.autoPaint > 0 && currentPlayer.paintSupply > 0 && !this.isPainting) {
+      this.isPainting = true;
+      this.updatePaintingStatusUI();
+    }
+
     // Paint cell if painting (works when moving OR stationary)
+    // Painting happens if: manually pressing space OR auto-paint upgrade is active
     const now = Date.now();
     if (this.isPainting && currentPlayer.paintSupply > 0 && now - this.lastPaintTime > this.paintThrottle) {
       this.tryPaintCurrentCell(currentPlayer.position);
@@ -219,7 +254,6 @@ export class Game {
   private tryPaintCurrentCell(position: Position): void {
     const gridCoords = worldToGrid(position, this.gridSize, this.cellPixelSize);
     if (!gridCoords) {
-      console.log(`[PAINT] Position (${position.x.toFixed(1)}, ${position.y.toFixed(1)}) is outside grid bounds`);
       return;
     }
     
@@ -227,14 +261,12 @@ export class Game {
     
     // Validate grid coordinates are within current grid bounds
     if (gridCoords.x >= this.gridSize || gridCoords.y >= this.gridSize) {
-      console.warn(`[PAINT] Grid coords out of bounds: ${cellKey} (gridSize: ${this.gridSize})`);
       return;
     }
     
     // Check if cell exists in current grid
     const cell = this.grid[gridCoords.y]?.[gridCoords.x];
     if (!cell) {
-      console.warn(`[PAINT] Cell not found in grid: ${cellKey}`);
       return;
     }
     
@@ -254,19 +286,34 @@ export class Game {
     
     // Also check the actual grid state to catch desync issues
     if (cell.painted) {
-      console.warn(`[PAINT] Cell ${cellKey} is painted in grid but NOT in paintedCells set - syncing`);
       this.paintedCells.add(cellKey);
       return;
     }
     
-    // Check if selected color matches the cell's required color
-    if (cell.number !== this.selectedColorNumber) {
-      console.log(`[PAINT] Cell ${cellKey} requires color ${cell.number}, but selected color is ${this.selectedColorNumber}`);
+    // Determine which color to use for painting
+    let colorToUse = this.selectedColorNumber;
+    
+    // Check if any auto paint upgrade is active for this cell number
+    if (cell.number === 1 && this.upgrades.autoPaintOne > 0) {
+      colorToUse = 1;
+    } else if (cell.number === 2 && this.upgrades.autoPaintTwo > 0) {
+      colorToUse = 2;
+    } else if (cell.number === 3 && this.upgrades.autoPaintThree > 0) {
+      colorToUse = 3;
+    } else if (cell.number === 4 && this.upgrades.autoPaintFour > 0) {
+      colorToUse = 4;
+    } else if (cell.number === 5 && this.upgrades.autoPaintFive > 0) {
+      colorToUse = 5;
+    } else if (cell.number === 6 && this.upgrades.autoPaintSix > 0) {
+      colorToUse = 6;
+    }
+    
+    // Check if the color to use matches the cell's required color
+    if (cell.number !== colorToUse) {
       return;
     }
     
-    console.log(`[PAINT] Requesting paint for cell ${cellKey}, color: ${this.selectedColorNumber}, cell requires: ${cell.number}`);
-    this.sendPaintRequest(cellKey, position, this.selectedColorNumber, 0);
+    this.sendPaintRequest(cellKey, position, colorToUse, 0);
   }
   
   private sendPaintRequest(cellKey: string, position: Position, colorNumber: number, retries: number): void {
@@ -359,7 +406,6 @@ export class Game {
     this.socketClient.on('gridUpdate', (grid) => {
       // Check for grid size mismatch (can happen during grid growth transition)
       if (grid.length !== this.gridSize || (grid[0] && grid[0].length !== this.gridSize)) {
-        console.warn(`[GRID_UPDATE] Grid size mismatch! Received ${grid.length}x${grid[0]?.length || 0}, expected ${this.gridSize}x${this.gridSize}. Waiting for gameState.`);
         // Don't update - wait for gameState which will sync everything properly
         return;
       }
@@ -367,37 +413,26 @@ export class Game {
       this.grid = grid;
       
       // Sync paintedCells with grid state to catch cells painted by other players
-      let syncedCount = 0;
       for (let y = 0; y < grid.length; y++) {
         for (let x = 0; x < grid[y].length; x++) {
           const cellKey = `${x},${y}`;
           if (grid[y][x].painted && !this.paintedCells.has(cellKey)) {
             this.paintedCells.add(cellKey);
-            syncedCount++;
           }
         }
-      }
-      if (syncedCount > 0) {
-        console.log(`[GRID_UPDATE] Synced ${syncedCount} painted cells from grid update`);
       }
     });
 
     this.socketClient.on('gameState', (state) => {
-      console.log(`[GAME_STATE] Received gameState - gridSize: ${state.gridSize}, players: ${state.players.length}`);
-      
       // Always clear and rebuild painted cells cache from server state
       // This ensures sync after reconnect, new round, or joining mid-game
-      const oldPaintedCount = this.paintedCells.size;
-      const oldPendingCount = this.pendingPaintCells.size;
       this.paintedCells.clear();
       this.pendingPaintCells.clear();
-      console.log(`[GAME_STATE] Cleared paintedCells (was ${oldPaintedCount}) and pendingPaintCells (was ${oldPendingCount})`);
       
       // Check if grid size changed (new round)
       if (state.gridSize !== this.gridSize) {
         this.isPainting = false; // Stop painting on new round
         this.updatePaintingStatusUI();
-        console.log(`[GAME_STATE] Grid size changed from ${this.gridSize} to ${state.gridSize}`);
       }
       
       // Update all game state data - IMPORTANT: update gridSize BEFORE processing grid
@@ -412,7 +447,6 @@ export class Game {
           }
         }
       }
-      console.log(`[GAME_STATE] Synced paintedCells: ${this.paintedCells.size} cells already painted out of ${this.gridSize * this.gridSize} total`);
       this.cellPixelSize = state.cellPixelSize;
       this.colors = state.colors;
       this.colorNumberMap = state.colorNumberMap;
@@ -421,8 +455,13 @@ export class Game {
       // Calculate recharge zone position (to the right of grid)
       const gridPixelSize = this.gridSize * this.cellPixelSize;
       const gridHalfSize = gridPixelSize / 2;
-      this.rechargeZoneCenterX = gridHalfSize + 200; // 200px to the right of grid edge
+      this.rechargeZoneCenterX = gridHalfSize + GAME_CONFIG.RECHARGE_ZONE_OFFSET_X;
       this.rechargeZoneCenterY = 0; // Centered vertically
+      
+      // Calculate pickup spot position (outside recharge zone)
+      this.pickupSpotCenterX = this.rechargeZoneCenterX + GAME_CONFIG.PICKUP_SPOT_OFFSET_X;
+      this.pickupSpotCenterY = this.rechargeZoneCenterY + GAME_CONFIG.PICKUP_SPOT_OFFSET_Y;
+      this.pickupSpotRadius = GAME_CONFIG.PICKUP_SPOT_RADIUS;
       
       // Update players - this must happen before creating avatars
       this.updatePlayers(state.players);
@@ -436,7 +475,6 @@ export class Game {
         
         if (!this.avatarElements.has(player.id)) {
           this.createAvatarElement(player);
-          console.log('Created avatar for player:', player.username, player.id);
         }
       });
       
@@ -474,6 +512,9 @@ export class Game {
       const player = this.players.get(update.playerId);
       if (player) {
         player.paintSupply = update.paintSupply;
+        if (update.pendingPaint !== undefined) {
+          player.pendingPaint = update.pendingPaint;
+        }
         if (update.playerId === this.currentPlayerId) {
           this.updatePaintSupplyUI();
         }
@@ -502,17 +543,11 @@ export class Game {
     
     // Handle failure response for position outside grid bounds (-1,-1)
     if (paint.cellX < 0 || paint.cellY < 0) {
-      if (isMyPaint) {
-        // Clear all pending cells from this position since we don't know which cell it was
-        // This is a rare edge case
-        console.warn(`[PAINT] Received failure for position outside grid bounds`);
-      }
       return;
     }
     
     // Check if coordinates are valid for current grid
     if (paint.cellX >= this.gridSize || paint.cellY >= this.gridSize) {
-      console.warn(`[PAINT] Paint response for cell outside current grid bounds: ${cellKey} (gridSize: ${this.gridSize})`);
       // Still remove from pending to prevent blocking
       this.pendingPaintCells.delete(cellKey);
       return;
@@ -520,16 +555,7 @@ export class Game {
     
     // Remove from pending set if this was our request
     if (isMyPaint) {
-      const wasPending = this.pendingPaintCells.has(cellKey);
       this.pendingPaintCells.delete(cellKey);
-      
-      if (paint.success) {
-        console.log(`[PAINT] ✓ Cell ${cellKey} painted by me. Total: ${this.paintedCells.size + 1}`);
-      } else if (wasPending) {
-        console.log(`[PAINT] ✗ Cell ${cellKey} paint failed - can retry`);
-      }
-    } else if (paint.success) {
-      console.log(`[PAINT] Cell ${cellKey} painted by ${paint.username}`);
     }
     
     // Update grid cell if we have it
@@ -542,8 +568,6 @@ export class Game {
         this.paintedCells.add(cellKey);
       }
       // If paint failed, pendingPaintCells is already cleared so player can retry
-    } else {
-      console.warn(`[PAINT] Grid cell ${cellKey} not found in local grid`);
     }
   }
 
@@ -554,6 +578,10 @@ export class Game {
         // For other players, preserve current position and set target for interpolation
         player.targetPosition = { ...player.position };
         player.position = { ...existingPlayer.position };
+      }
+      // Ensure cellsPainted is initialized
+      if (player.cellsPainted === undefined) {
+        player.cellsPainted = 0;
       }
       this.players.set(player.id, player);
     });
@@ -571,6 +599,13 @@ export class Game {
     nameLabel.textContent = player.username;
     avatar.appendChild(nameLabel);
 
+    // Add crown element (will be shown/hidden based on leader status)
+    const crown = document.createElement('div');
+    crown.className = 'avatar-crown';
+    crown.innerHTML = '👑';
+    crown.style.display = 'none';
+    avatar.appendChild(crown);
+
     this.updateAvatarPosition(player);
 
     const container = document.getElementById('playing-field-container');
@@ -578,6 +613,9 @@ export class Game {
       container.appendChild(avatar);
       this.avatarElements.set(player.id, avatar);
     }
+    
+    // Update crown visibility after creating avatar
+    this.updateCrowns();
   }
 
   private updateAvatarPosition(player: Player): void {
@@ -622,10 +660,20 @@ export class Game {
       
       name.appendChild(colorDot);
       name.appendChild(document.createTextNode(player.username));
+      
+      // Add cells painted count
+      const cellsPainted = player.cellsPainted || 0;
+      const countSpan = document.createElement('span');
+      countSpan.className = 'player-cells-count';
+      countSpan.textContent = ` (${cellsPainted})`;
+      name.appendChild(countSpan);
 
       item.appendChild(name);
       playerListEl.appendChild(item);
     });
+    
+    // Update crowns after updating player list
+    this.updateCrowns();
   }
 
   private createColorPaletteUI(): void {
@@ -725,13 +773,11 @@ export class Game {
     
     // Remove cells that have exceeded max retries
     if (toRemove.length > 0) {
-      console.warn(`[PAINT] Giving up on ${toRemove.length} cells after max retries:`, toRemove);
       toRemove.forEach(key => this.pendingPaintCells.delete(key));
     }
     
     // Retry cells that haven't exceeded max retries
     toRetry.forEach(({ cellKey, info }) => {
-      console.log(`[PAINT] Retrying cell ${cellKey} (attempt ${info.retries + 2}/${this.maxRetries + 1})`);
       this.sendPaintRequest(cellKey, info.position, info.colorNumber, info.retries + 1);
     });
   }
@@ -755,6 +801,78 @@ export class Game {
       }
       
       this.updateAvatarPosition(player);
+    });
+    
+    // Update crown visibility
+    this.updateCrowns();
+  }
+  
+  private updateCrowns(): void {
+    // Find player(s) with the most cells painted
+    let maxCellsPainted = -1;
+    const leaders: string[] = [];
+    
+    this.players.forEach((player) => {
+      const cellsPainted = player.cellsPainted || 0;
+      if (cellsPainted > maxCellsPainted) {
+        maxCellsPainted = cellsPainted;
+        leaders.length = 0;
+        leaders.push(player.id);
+      } else if (cellsPainted === maxCellsPainted && maxCellsPainted > 0) {
+        leaders.push(player.id);
+      }
+    });
+    
+    // Update crown visibility and emoji for all avatars
+    this.players.forEach((player) => {
+      const avatar = this.avatarElements.get(player.id);
+      if (avatar) {
+        let crown = avatar.querySelector('.avatar-crown') as HTMLElement;
+        
+        // Create crown element if it doesn't exist (for existing avatars)
+        if (!crown) {
+          crown = document.createElement('div');
+          crown.className = 'avatar-crown';
+          avatar.appendChild(crown);
+        }
+        
+        // Collect all purchased hats (stack them)
+        const hats: string[] = [];
+        const upgrades = player.upgrades || {};
+        
+        // Add default crown if no hats purchased
+        if (upgrades.rescueHat === 0 && upgrades.womanHat === 0 && upgrades.topHat === 0 && 
+            upgrades.capHat === 0 && upgrades.graduationHat === 0) {
+          hats.push('👑');
+        } else {
+          // Add all purchased hats in order
+          if (upgrades.rescueHat > 0) {
+            hats.push('⛑️');
+          }
+          if (upgrades.womanHat > 0) {
+            hats.push('👒');
+          }
+          if (upgrades.topHat > 0) {
+            hats.push('🎩');
+          }
+          if (upgrades.capHat > 0) {
+            hats.push('🧢');
+          }
+          if (upgrades.graduationHat > 0) {
+            hats.push('🎓');
+          }
+        }
+        
+        // Set crown content to stacked hats (one per line using <br>)
+        crown.innerHTML = hats.join('<br>');
+        
+        // Show crown only if this player is a leader and has painted at least one cell
+        if (leaders.includes(player.id) && maxCellsPainted > 0) {
+          crown.style.display = 'block';
+        } else {
+          crown.style.display = 'none';
+        }
+      }
     });
   }
 
@@ -849,10 +967,35 @@ export class Game {
     this.ctx.font = 'bold 20px Arial';
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
-    this.ctx.fillText('RECHARGE', zoneCenter.x, zoneCenter.y - 10);
+    this.ctx.fillText('PAINT MAKING', zoneCenter.x, zoneCenter.y - 10);
     this.ctx.font = 'bold 16px Arial';
     this.ctx.fillStyle = 'rgba(50, 150, 50, 0.7)';
     this.ctx.fillText('STATION', zoneCenter.x, zoneCenter.y + 15);
+    
+    // Draw pickup spot
+    const pickupCenter = this.worldToScreen({
+      x: this.pickupSpotCenterX,
+      y: this.pickupSpotCenterY
+    });
+    
+    // Draw filled circle for pickup spot
+    this.ctx.fillStyle = 'rgba(255, 200, 0, 0.4)';
+    this.ctx.beginPath();
+    this.ctx.arc(pickupCenter.x, pickupCenter.y, this.pickupSpotRadius, 0, Math.PI * 2);
+    this.ctx.fill();
+    
+    // Draw border for pickup spot
+    this.ctx.strokeStyle = 'rgba(255, 165, 0, 0.9)';
+    this.ctx.lineWidth = 3;
+    this.ctx.beginPath();
+    this.ctx.arc(pickupCenter.x, pickupCenter.y, this.pickupSpotRadius, 0, Math.PI * 2);
+    this.ctx.stroke();
+    
+    // Draw pickup label
+    this.ctx.fillStyle = 'rgba(255, 165, 0, 0.9)';
+    this.ctx.font = 'bold 14px Arial';
+    this.ctx.fillText('PAINT', pickupCenter.x, pickupCenter.y -10);
+    this.ctx.fillText('PICKUP', pickupCenter.x, pickupCenter.y + 5);
   }
 
   private updatePaintSupplyUI(): void {
@@ -863,12 +1006,17 @@ export class Game {
     const maxPaintSupplyLevel = this.upgrades.maxPaintSupply || 0;
     const maxPaintSupply = GAME_CONFIG.MAX_PAINT_SUPPLY + (maxPaintSupplyLevel * GAME_CONFIG.UPGRADES.maxPaintSupply.effectPerLevel);
     const paintPercentage = (currentPlayer.paintSupply / maxPaintSupply) * 100;
+    const pendingPaint = currentPlayer.pendingPaint || 0;
     
     const paintSupplyEl = document.getElementById('paint-supply');
     const paintSupplyBar = document.getElementById('paint-supply-bar');
     
     if (paintSupplyEl) {
-      paintSupplyEl.textContent = `Paint: ${Math.round(currentPlayer.paintSupply)}/${maxPaintSupply}`;
+      let text = `Paint: ${Math.round(currentPlayer.paintSupply)}/${maxPaintSupply}`;
+      if (pendingPaint > 0) {
+        text += ` (+${Math.round(pendingPaint)} pending)`;
+      }
+      paintSupplyEl.textContent = text;
     }
     
     if (paintSupplyBar) {
@@ -1075,12 +1223,23 @@ export class Game {
   private toggleShop(): void {
     this.isShopOpen = !this.isShopOpen;
     const shopPanel = document.getElementById('shop-panel');
+    let backdrop = document.getElementById('shop-backdrop');
+    
+    if (!backdrop) {
+      backdrop = document.createElement('div');
+      backdrop.id = 'shop-backdrop';
+      backdrop.onclick = () => this.toggleShop(); // Close shop when clicking backdrop
+      document.getElementById('game-screen')?.appendChild(backdrop);
+    }
+    
     if (shopPanel) {
       if (this.isShopOpen) {
         shopPanel.classList.remove('hidden');
+        if (backdrop) backdrop.classList.remove('hidden');
         this.updateShopUI();
       } else {
         shopPanel.classList.add('hidden');
+        if (backdrop) backdrop.classList.add('hidden');
       }
     }
   }
@@ -1113,76 +1272,130 @@ export class Game {
 
     shopItems.innerHTML = '';
 
-    // Movement Speed Upgrade
-    const speedUpgradeConfig = GAME_CONFIG.UPGRADES.movementSpeed;
-    const speedCurrentLevel = this.upgrades.movementSpeed;
-    const speedIsMaxLevel = speedCurrentLevel >= speedUpgradeConfig.maxLevel;
-    const speedCost = Math.round(speedIsMaxLevel ? 0 : speedUpgradeConfig.baseCost * Math.pow(speedUpgradeConfig.costMultiplier, speedCurrentLevel));
-    const speedCanAfford = playerGold >= speedCost;
+    // Generic helper function to create upgrade items
+    const createUpgradeItem = (
+      upgradeId: keyof PlayerUpgrades,
+      upgradeConfig: { name: string; description: string; maxLevel: number; baseCost: number; costMultiplier: number; effectPerLevel?: number },
+      emoji: string,
+      getEffectText: (currentLevel: number, isEnabled: boolean) => string
+    ) => {
+      const currentLevel = this.upgrades[upgradeId] || 0;
+      const isMaxLevel = currentLevel >= upgradeConfig.maxLevel;
+      const cost = Math.round(isMaxLevel ? 0 : upgradeConfig.baseCost * Math.pow(upgradeConfig.costMultiplier, currentLevel));
+      const canAfford = playerGold >= cost;
+      const isEnabled = currentLevel > 0;
 
-    const speedItemDiv = document.createElement('div');
-    speedItemDiv.className = 'shop-item';
-    
-    speedItemDiv.innerHTML = `
-      <div class="shop-item-info">
-        <div class="shop-item-name">🏃 ${speedUpgradeConfig.name}</div>
-        <div class="shop-item-desc">${speedUpgradeConfig.description}</div>
-        <div class="shop-item-level">Level: ${speedCurrentLevel}/${speedUpgradeConfig.maxLevel}</div>
-        <div class="shop-item-effect">Current bonus: +${(speedCurrentLevel * speedUpgradeConfig.effectPerLevel).toFixed(1)} speed</div>
-      </div>
-      <button class="shop-buy-btn ${speedIsMaxLevel ? 'maxed' : (!speedCanAfford ? 'disabled' : '')}" 
-              ${speedIsMaxLevel || !speedCanAfford ? 'disabled' : ''}>
-        ${speedIsMaxLevel ? 'MAX' : `🪙 ${speedCost}`}
-      </button>
-    `;
+      const itemDiv = document.createElement('div');
+      itemDiv.className = 'shop-item';
+      
+      itemDiv.innerHTML = `
+        <div class="shop-item-info">
+          <div class="shop-item-name">${emoji} ${upgradeConfig.name}</div>
+          <div class="shop-item-desc">${upgradeConfig.description}</div>
+          <div class="shop-item-level">Level: ${currentLevel}/${upgradeConfig.maxLevel}</div>
+          <div class="shop-item-effect">${getEffectText(currentLevel, isEnabled)}</div>
+        </div>
+        <button class="shop-buy-btn ${isMaxLevel ? 'maxed' : (!canAfford ? 'disabled' : '')}" 
+                ${isMaxLevel || !canAfford ? 'disabled' : ''}>
+          ${isMaxLevel ? 'MAX' : `🪙 ${cost}`}
+        </button>
+      `;
 
-    const speedBuyBtn = speedItemDiv.querySelector('.shop-buy-btn');
-    if (speedBuyBtn && !speedIsMaxLevel && speedCanAfford) {
-      speedBuyBtn.addEventListener('click', () => {
-        this.socketClient.purchaseUpgrade({
-          playerId: this.currentPlayerId,
-          upgradeId: 'movementSpeed',
+      const buyBtn = itemDiv.querySelector('.shop-buy-btn');
+      if (buyBtn && !isMaxLevel && canAfford) {
+        buyBtn.addEventListener('click', () => {
+          this.socketClient.purchaseUpgrade({
+            playerId: this.currentPlayerId,
+            upgradeId: upgradeId,
+          });
         });
-      });
-    }
+      }
 
-    shopItems.appendChild(speedItemDiv);
+      shopItems.appendChild(itemDiv);
+    };
+
+    // Movement Speed Upgrade
+    createUpgradeItem(
+      'movementSpeed',
+      GAME_CONFIG.UPGRADES.movementSpeed,
+      '🏃',
+      (currentLevel, isEnabled) => `Current bonus: +${(currentLevel * GAME_CONFIG.UPGRADES.movementSpeed.effectPerLevel).toFixed(1)} speed`
+    );
 
     // Max Paint Supply Upgrade
-    const paintUpgradeConfig = GAME_CONFIG.UPGRADES.maxPaintSupply;
-    const paintCurrentLevel = this.upgrades.maxPaintSupply;
-    const paintIsMaxLevel = paintCurrentLevel >= paintUpgradeConfig.maxLevel;
-    const paintCost = Math.round(paintIsMaxLevel ? 0 : paintUpgradeConfig.baseCost * Math.pow(paintUpgradeConfig.costMultiplier, paintCurrentLevel));
-    const paintCanAfford = playerGold >= paintCost;
-    const currentMaxPaint = GAME_CONFIG.MAX_PAINT_SUPPLY + (paintCurrentLevel * paintUpgradeConfig.effectPerLevel);
+    createUpgradeItem(
+      'maxPaintSupply',
+      GAME_CONFIG.UPGRADES.maxPaintSupply,
+      '🎨',
+      (currentLevel, isEnabled) => {
+        const currentMaxPaint = GAME_CONFIG.MAX_PAINT_SUPPLY + (currentLevel * GAME_CONFIG.UPGRADES.maxPaintSupply.effectPerLevel);
+        return `Current max: ${currentMaxPaint} paint`;
+      }
+    );
 
-    const paintItemDiv = document.createElement('div');
-    paintItemDiv.className = 'shop-item';
-    
-    paintItemDiv.innerHTML = `
-      <div class="shop-item-info">
-        <div class="shop-item-name">🎨 ${paintUpgradeConfig.name}</div>
-        <div class="shop-item-desc">${paintUpgradeConfig.description}</div>
-        <div class="shop-item-level">Level: ${paintCurrentLevel}/${paintUpgradeConfig.maxLevel}</div>
-        <div class="shop-item-effect">Current max: ${currentMaxPaint} paint</div>
-      </div>
-      <button class="shop-buy-btn ${paintIsMaxLevel ? 'maxed' : (!paintCanAfford ? 'disabled' : '')}" 
-              ${paintIsMaxLevel || !paintCanAfford ? 'disabled' : ''}>
-        ${paintIsMaxLevel ? 'MAX' : `🪙 ${paintCost}`}
-      </button>
-    `;
+    // Direct Pickup Upgrade
+    createUpgradeItem(
+      'directPickup',
+      GAME_CONFIG.UPGRADES.directPickup,
+      '⚡',
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Get paint directly from pickup spot' 
+        : 'Disabled: Must use recharge zone first'
+    );
 
-    const paintBuyBtn = paintItemDiv.querySelector('.shop-buy-btn');
-    if (paintBuyBtn && !paintIsMaxLevel && paintCanAfford) {
-      paintBuyBtn.addEventListener('click', () => {
-        this.socketClient.purchaseUpgrade({
-          playerId: this.currentPlayerId,
-          upgradeId: 'maxPaintSupply',
-        });
-      });
-    }
+    // Auto Paint Upgrade
+    createUpgradeItem(
+      'autoPaint',
+      GAME_CONFIG.UPGRADES.autoPaint,
+      '🖌️',
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Automatically paint cells without pressing space' 
+        : 'Disabled: Must press space to paint'
+    );
 
-    shopItems.appendChild(paintItemDiv);
+    // Auto Paint One Upgrade
+    createUpgradeItem(
+      'autoPaintOne',
+      GAME_CONFIG.UPGRADES.autoPaintOne,
+      '🎯',
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Automatically paint cells with number 1' 
+        : 'Disabled: Must select color 1 manually'
+    );
+
+    // Add all auto paint upgrades (2-6)
+    createUpgradeItem('autoPaintTwo', GAME_CONFIG.UPGRADES.autoPaintTwo, '🎯', 
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Automatically paint cells with number 2' 
+        : 'Disabled: Must select color 2 manually');
+    createUpgradeItem('autoPaintThree', GAME_CONFIG.UPGRADES.autoPaintThree, '🎯',
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Automatically paint cells with number 3' 
+        : 'Disabled: Must select color 3 manually');
+    createUpgradeItem('autoPaintFour', GAME_CONFIG.UPGRADES.autoPaintFour, '🎯',
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Automatically paint cells with number 4' 
+        : 'Disabled: Must select color 4 manually');
+    createUpgradeItem('autoPaintFive', GAME_CONFIG.UPGRADES.autoPaintFive, '🎯',
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Automatically paint cells with number 5' 
+        : 'Disabled: Must select color 5 manually');
+    createUpgradeItem('autoPaintSix', GAME_CONFIG.UPGRADES.autoPaintSix, '🎯',
+      (currentLevel, isEnabled) => isEnabled 
+        ? 'Enabled: Automatically paint cells with number 6' 
+        : 'Disabled: Must select color 6 manually');
+
+    // Add all hat upgrades
+    createUpgradeItem('rescueHat', GAME_CONFIG.UPGRADES.rescueHat, '⛑️',
+      (currentLevel, isEnabled) => isEnabled ? 'Purchased: Leader crown will show ⛑️' : 'Not purchased');
+    createUpgradeItem('womanHat', GAME_CONFIG.UPGRADES.womanHat, '👒',
+      (currentLevel, isEnabled) => isEnabled ? 'Purchased: Leader crown will show 👒' : 'Not purchased');
+    createUpgradeItem('topHat', GAME_CONFIG.UPGRADES.topHat, '🎩',
+      (currentLevel, isEnabled) => isEnabled ? 'Purchased: Leader crown will show 🎩' : 'Not purchased');
+    createUpgradeItem('capHat', GAME_CONFIG.UPGRADES.capHat, '🧢',
+      (currentLevel, isEnabled) => isEnabled ? 'Purchased: Leader crown will show 🧢' : 'Not purchased');
+    createUpgradeItem('graduationHat', GAME_CONFIG.UPGRADES.graduationHat, '🎓',
+      (currentLevel, isEnabled) => isEnabled ? 'Purchased: Leader crown will show 🎓' : 'Not purchased');
   }
 }
 

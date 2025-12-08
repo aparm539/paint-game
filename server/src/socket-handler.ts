@@ -89,10 +89,25 @@ export class GameRoom {
       position: startPosition,
       color: avatarColor,
       paintSupply: GAME_CONFIG.MAX_PAINT_SUPPLY,
+      pendingPaint: 0,
       gold: 0,
+      cellsPainted: 0,
       upgrades: {
         movementSpeed: 0,
         maxPaintSupply: 0,
+        directPickup: 0,
+        autoPaint: 0,
+        autoPaintOne: 0,
+        autoPaintTwo: 0,
+        autoPaintThree: 0,
+        autoPaintFour: 0,
+        autoPaintFive: 0,
+        autoPaintSix: 0,
+        rescueHat: 0,
+        womanHat: 0,
+        topHat: 0,
+        capHat: 0,
+        graduationHat: 0,
       },
     };
     
@@ -126,7 +141,13 @@ export class GameRoom {
       const rechargeZoneCenterX = gridHalfSize + GAME_CONFIG.RECHARGE_ZONE_OFFSET_X;
       const rechargeZoneCenterY = 0;
       
-      // Check if player is in recharge zone and refill paint
+      // Calculate pickup spot position (outside recharge zone)
+      const pickupSpotCenterX = rechargeZoneCenterX + GAME_CONFIG.PICKUP_SPOT_OFFSET_X;
+      const pickupSpotCenterY = rechargeZoneCenterY + GAME_CONFIG.PICKUP_SPOT_OFFSET_Y;
+      
+      const maxPaintSupply = this.getMaxPaintSupply(player);
+      
+      // Check if player is in recharge zone - accumulate pending paint
       const inRechargeZone = isInCircularZone(
         position,
         rechargeZoneCenterX,
@@ -134,20 +155,64 @@ export class GameRoom {
         GAME_CONFIG.RECHARGE_ZONE_RADIUS
       );
       
-      const maxPaintSupply = this.getMaxPaintSupply(player);
-      if (inRechargeZone && player.paintSupply < maxPaintSupply) {
-        player.paintSupply = clamp(
-          player.paintSupply + GAME_CONFIG.RECHARGE_RATE,
-          0,
-          maxPaintSupply
-        );
+      if (inRechargeZone) {
+        // Accumulate paint into pendingPaint (up to max)
+        const totalPaint = player.paintSupply + player.pendingPaint;
+        if (totalPaint < maxPaintSupply) {
+          player.pendingPaint = clamp(
+            player.pendingPaint + GAME_CONFIG.RECHARGE_RATE,
+            0,
+            maxPaintSupply - player.paintSupply
+          );
+          
+          // Broadcast paint supply update (includes pending paint info)
+          const update: PaintSupplyUpdate = {
+            playerId: player.id,
+            paintSupply: player.paintSupply,
+            pendingPaint: player.pendingPaint,
+          };
+          this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, update);
+        }
+      }
+      
+      // Check if player is at pickup spot - transfer pending paint to actual supply
+      const atPickupSpot = isInCircularZone(
+        position,
+        pickupSpotCenterX,
+        pickupSpotCenterY,
+        GAME_CONFIG.PICKUP_SPOT_RADIUS
+      );
+      
+      if (atPickupSpot) {
+        const hasDirectPickup = (player.upgrades.directPickup || 0) > 0;
         
-        // Broadcast paint supply update
-        const update: PaintSupplyUpdate = {
-          playerId: player.id,
-          paintSupply: player.paintSupply,
-        };
-        this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, update);
+        if (hasDirectPickup) {
+          // Direct pickup upgrade: instantly fill paint supply to max
+          if (player.paintSupply < maxPaintSupply) {
+            player.paintSupply = maxPaintSupply;
+            
+            // Broadcast paint supply update
+            const update: PaintSupplyUpdate = {
+              playerId: player.id,
+              paintSupply: player.paintSupply,
+              pendingPaint: player.pendingPaint,
+            };
+            this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, update);
+          }
+        } else if (player.pendingPaint > 0) {
+          // Normal behavior: transfer pending paint to actual supply
+          const transferAmount = Math.min(player.pendingPaint, maxPaintSupply - player.paintSupply);
+          player.paintSupply = clamp(player.paintSupply + transferAmount, 0, maxPaintSupply);
+          player.pendingPaint = Math.max(0, player.pendingPaint - transferAmount);
+          
+          // Broadcast paint supply update
+          const update: PaintSupplyUpdate = {
+            playerId: player.id,
+            paintSupply: player.paintSupply,
+            pendingPaint: player.pendingPaint,
+          };
+          this.io.emit(SocketEvents.PAINT_SUPPLY_UPDATE, update);
+        }
       }
     }
   }
@@ -259,6 +324,9 @@ export class GameRoom {
     // Success: deduct paint supply
     player.paintSupply = Math.max(0, player.paintSupply - GAME_CONFIG.PAINT_COST_PER_CELL);
 
+    // Increment player's cells painted counter
+    player.cellsPainted = (player.cellsPainted || 0) + 1;
+
     // Broadcast paint supply update
     const supplyUpdate: PaintSupplyUpdate = {
       playerId: player.id,
@@ -286,6 +354,9 @@ export class GameRoom {
 
     // Broadcast grid update
     this.io.emit(SocketEvents.GRID_UPDATE, this.grid);
+
+    // Broadcast updated player list to show new cells painted count
+    this.broadcastPlayerList();
 
     // Calculate and broadcast progress
     const progress = this.calculateProgress();
